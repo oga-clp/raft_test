@@ -18,6 +18,7 @@
 #define RET_ERR_SOCKET				4
 #define RET_ERR_BIND				5
 #define RET_ERR_CLOCK_GETTIME		6
+#define RET_ERR_EXCEED_TIMEOUT		7
 
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
@@ -39,6 +40,9 @@
 #define ROLE_CANDIDATE					1
 #define ROLE_LEADER						2
 
+#define RAFT_FALSE						0
+#define RAFT_TRUE						1
+
 typedef struct _NODE_INFO {
 	char				name[NODE_NAME_LEN];
 	int					port;
@@ -54,9 +58,9 @@ typedef struct _LOG_INFO {
 } LOG_INFO, *PLOG_INFO;
 
 typedef struct _LOG_ENTRIES_INFO {
-	int						index;
-	struct _LOG_INFO		log;
-	struct _LOG_ENTRY_INFO	*next;
+	int							index;
+	struct _LOG_INFO			log;
+	struct _LOG_ENTRIES_INFO	*next;
 } LOG_ENTRIES_INFO, *PLOG_ENTRIES_INFO;
 
 typedef struct _APPEND_ENTRIES_REQ {
@@ -75,14 +79,23 @@ typedef struct _REQUEST_VOTE_REQ {
 	int					lastLogTerm;
 } REQUEST_VOTE_REQ, *PREQUEST_VOTE_REQ;
 
+typedef struct _REQUEST_VOTE_RES {
+	int					term;
+	int					voteGranted;
+} REQUEST_VOTE_RES, *PREQUEST_VOTE_RES;
+
 typedef struct _RPC_INFO {
 	int			type;					// RPC type
 	char		name[NODE_NAME_LEN];	// Source
 	union {
 		struct _APPEND_ENTRIES_REQ	append_req;
 		struct _REQUEST_VOTE_REQ	request_req;
+		struct _REQUEST_VOTE_RES	request_res;
 		// 後で追加
 	};
 } RPC_INFO, *PRPC_INFO;
 
 int get_config(int *timeout, PNODE_INFO *nodes, int *node_num);
+int check_timeout(struct timespec *last_ts, int timeout_sec);
+int set_timeout(struct timespec *last_ts);
+int init_follower(int *myrole, struct timespec *last_ts);

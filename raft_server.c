@@ -17,6 +17,8 @@ int main(int argc, char *argv[])
 	int				sock_nonblock;
 	int				el_timeout;
 	int				node_num;
+	int				voted;
+	int				send_requestvote;
 	RPC_INFO		buf;
 	NODE_INFO		*nodes, *pt_node, *tmp_node;
 	NODE_INFO		mynode;
@@ -26,6 +28,8 @@ int main(int argc, char *argv[])
 	ret = RET_SUCCESS;
 	el_timeout = DEFAULT_ELECTION_TIMEOUT;
 	node_num = 0;
+	voted = 0;
+	send_requestvote = 0;
 	mysock = -1;
 	target_sock = -1;
 	myrole = ROLE_FOLLOWER;
@@ -33,9 +37,8 @@ int main(int argc, char *argv[])
 	pt_node = NULL;
 	tmp_node = NULL;
 	memset(&mynode, 0, sizeof(mynode));
-	result = clock_gettime(CLOCK_MONOTONIC, &last_ts);
-	if (result == -1) {
-		fprintf(stderr, "Error: clock_gettime() failed. (errno=%d)\n", errno);
+	result = set_timeout(&last_ts);
+	if (result != RET_SUCCESS) {
 		ret = RET_ERR_CLOCK_GETTIME;
 		goto exit;
 	}
@@ -50,7 +53,7 @@ int main(int argc, char *argv[])
 	/* Read a cluster configuration */
 	ret = get_config(&el_timeout, &nodes, &node_num);
 	if (ret != RET_SUCCESS) {
-		fprintf(stderr, "Error: get_config fails. (ret=%d)\n", ret);
+		fprintf(stderr, "Error: get_config() fails. (ret=%d)\n", ret);
 		goto exit;
 	}
 
@@ -115,7 +118,15 @@ int main(int argc, char *argv[])
 			}
 		} else {
 			/* Received data */
-			if (buf.type == RPC_TYPE_APPEND_ENTRIES_REQ) {
+			switch (buf.type) {
+			case RPC_TYPE_APPEND_ENTRIES_REQ:
+				/* Reset election timeout */
+				result = set_timeout(&last_ts);
+				if (result != RET_SUCCESS) {
+					ret = RET_ERR_CLOCK_GETTIME;
+					goto exit;
+				}
+
 				if (!strlen(buf.append_req.entries)) {
 					/* Heartbeat */
 					printf("Received Heartbeat from %s\n", buf.name);
@@ -123,45 +134,154 @@ int main(int argc, char *argv[])
 					/* AppendEntries RPC */
 					printf("Received %s from %s\n", buf.append_req.entries, buf.name);
 				}
-			} else if (buf.type == RPC_TYPE_REQUEST_VOTE_REQ) {
-				// 要修正
-			} else if (buf.type == RPC_TYPE_INSTALL_SNAPSHOT_REQ) {
-				// 要修正
-			} else if (buf.type == RPC_TYPE_APPEND_ENTRIES_RES) {
-				// 要修正
-			} else if (buf.type == RPC_TYPE_REQUEST_VOTE_RES) {
-				// 要修正
-			} else if (buf.type == RPC_TYPE_INSTALL_SNAPSHOT_RES) {
-				// 要修正
+				break;
+			case RPC_TYPE_REQUEST_VOTE_REQ:
+				pt_node = nodes;
+				while (pt_node) {
+					if (!strcmp(buf.request_req.candidateId, pt_node->name)) {
+						break;
+					}
+					pt_node = pt_node->next;
+				}
+				if (!pt_node) {
+					/* Invalid node name */
+					break;
+				}
+
+				if (buf.request_req.term > currentTerm) {
+					currentTerm = buf.request_req.term;
+					ret = init_follower(&myrole, &last_ts);
+					if (ret != RET_SUCCESS) {
+						fprintf(stderr, "Error: init_follower() fails. (ret=%d)\n", ret);
+						goto exit;
+					}
+				}
+
+				if (myrole == ROLE_FOLLOWER) {
+					target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+					RPC_INFO packet;
+					memset(&packet, 0, sizeof(packet));
+					packet.type = RPC_TYPE_REQUEST_VOTE_RES;
+					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+					packet.request_res.term = currentTerm;
+
+					/* Check if candidate's term is new */
+					if (buf.request_req.term == currentTerm) {
+						if (votedFor[0] == '\0' || !strcmp(buf.request_req.candidateId, votedFor)) {
+							/* Vote */
+							packet.request_res.voteGranted = RAFT_TRUE;
+							strncpy(votedFor, buf.request_req.candidateId, sizeof(votedFor) - 1);
+						}
+					} else {
+						/* Cadidate's term is old, not vote */
+						packet.request_res.voteGranted = RAFT_FALSE;
+					}
+
+					/* 要修正 lastLogIndex, lastLotTermチェック*/
+
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+					close(target_sock);
+					printf("Send RequestVote RPC response to %s\n", pt_node->name);
+				}
+				break;
+			case RPC_TYPE_INSTALL_SNAPSHOT_REQ:
+				break;
+			case RPC_TYPE_APPEND_ENTRIES_RES:
+				break;
+			case RPC_TYPE_REQUEST_VOTE_RES:
+				if (buf.request_res.term > currentTerm) {
+					currentTerm = buf.request_res.term;
+					ret = init_follower(&myrole, &last_ts);
+					if (ret != RET_SUCCESS) {
+						fprintf(stderr, "Error: init_follower() fails. (ret=%d)\n", ret);
+						goto exit;
+					}
+				}
+
+				if (myrole == ROLE_CANDIDATE) {
+					if (buf.request_res.term == currentTerm && buf.request_res.voteGranted) {
+						voted++;
+					}
+				}
+				break;
+			case RPC_TYPE_INSTALL_SNAPSHOT_RES:
+				break;
+			default:
+				break;
 			}
 		}
 
 		if (myrole == ROLE_FOLLOWER) {
-			result = clock_gettime(CLOCK_MONOTONIC, &ts);
-			if (result == -1) {
-				fprintf(stderr, "Error: clock_gettime() failed. (errno=%d)\n", errno);
-			} else {
-				if ((ts.tv_sec + (double)ts.tv_nsec / 1000000000) - (last_ts.tv_sec + (double)last_ts.tv_nsec / 1000000000) > el_timeout) {
-					printf("timeout\n");
-					myrole = ROLE_CANDIDATE;
-				}
+			/* Check election timeout */
+			result = check_timeout(&last_ts, el_timeout);
+			if (result == RET_ERR_EXCEED_TIMEOUT) {
+				printf("Switch to CANDIDATE.\n");
+				myrole = ROLE_CANDIDATE;
+				currentTerm++;
+				/* Vote for itself  */
+				voted = 1;
+				send_requestvote = 0;
+			} else if (result == RET_ERR_CLOCK_GETTIME) {
+				ret = RET_ERR_CLOCK_GETTIME;
+				goto exit;
 			}
 		}
 
 		if (myrole == ROLE_CANDIDATE) {
-			//
+			/* Check votes obtained */
+			if (voted > node_num / 2 + 1) {
+				myrole = ROLE_LEADER;
+			} else {
+				/* Check election timeout */
+				result = check_timeout(&last_ts, el_timeout);
+				if (result == RET_ERR_EXCEED_TIMEOUT) {
+					printf("Election timeout. Restart election.\n");
+					currentTerm++;
+					/* Vote for itself  */
+					voted = 1;
+					send_requestvote = 0;
+				} else if (result == RET_ERR_CLOCK_GETTIME) {
+					ret = RET_ERR_CLOCK_GETTIME;
+					goto exit;
+				}
+
+				/* Send RequestVote RPC to all servers */
+				if (!send_requestvote) {
+					pt_node = nodes;
+					while (pt_node) {
+						if (!strcmp(mynode.name, pt_node->name)) {
+							pt_node = pt_node->next;
+							continue;
+						}
+						target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+						
+						RPC_INFO packet;
+						memset(&packet, 0, sizeof(packet));
+						packet.type = RPC_TYPE_REQUEST_VOTE_REQ;
+						strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+						packet.request_req.term = currentTerm;
+						strncpy(packet.request_req.candidateId, mynode.name, sizeof(packet.request_req.candidateId) - 1);
+						packet.request_req.lastLogIndex = 0; //要修正
+						packet.request_req.lastLogTerm = 0; //要修正
+						sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+						close(target_sock);
+						printf("Send RequestVote RPC request to %s\n", pt_node->name);
+
+						pt_node = pt_node->next;
+					}
+				}
+				send_requestvote = 1;
+			}
 		}
 
 		if (myrole == ROLE_LEADER) {
-			/* Send a heartbeat to all servers */
+			/* Send Heartbeat to all servers */
 			pt_node = nodes;
 			while (pt_node) {
 				if (!strcmp(mynode.name, pt_node->name)) {
 					pt_node = pt_node->next;
 					continue;
 				}
-				printf("Send start\n");
-				
 				target_sock = socket(AF_INET, SOCK_DGRAM, 0);
 				
 				/* Send a heartbeat packet */
@@ -176,10 +296,8 @@ int main(int argc, char *argv[])
 				packet.append_req.leaderCommit = 0; //要修正
 				sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 				//sendto(target_sock, "HELLO", 5, 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
-				
 				close(target_sock);
-
-				printf("Send to %s\n", pt_node->name);
+				printf("Send Heartbeat to %s\n", pt_node->name);
 
 				pt_node = pt_node->next;
 			}
@@ -298,4 +416,59 @@ exit:
 	return ret;
 }
 
+int check_timeout(struct timespec *last_ts, int timeout_sec)
+{
+	int ret;
+	int result;
+	struct timespec ts;
 
+	/* Initialization */
+	ret = RET_SUCCESS;
+
+	result = clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (result == -1) {
+		fprintf(stderr, "Error: clock_gettime() failed. (errno=%d)\n", errno);
+		ret = RET_ERR_CLOCK_GETTIME;
+		goto exit;
+	} else {
+		if ((ts.tv_sec + (double)ts.tv_nsec / 1000000000) - (last_ts->tv_sec + (double)last_ts->tv_nsec / 1000000000) > timeout_sec) {
+			*last_ts = ts;
+			ret = RET_ERR_EXCEED_TIMEOUT;
+			goto exit;
+		}
+	}
+
+exit:
+	return ret;
+}
+
+int set_timeout(struct timespec *last_ts)
+{
+	int ret;
+	int result;
+
+	/* Initialization */
+	ret = RET_SUCCESS;
+
+	result = clock_gettime(CLOCK_MONOTONIC, last_ts);
+	if (result == -1) {
+		fprintf(stderr, "Error: clock_gettime() failed. (errno=%d)\n", errno);
+		ret = RET_ERR_CLOCK_GETTIME;
+		goto exit;
+	}
+
+exit:
+	return ret;
+}
+
+int init_follower(int *myrole, struct timespec *last_ts)
+{
+	int ret = RET_SUCCESS;
+	int result;
+
+	*myrole = ROLE_FOLLOWER;
+	memset(votedFor, 0, sizeof(votedFor));
+	ret = set_timeout(last_ts);
+
+	return ret;
+}
