@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -19,13 +20,18 @@
 #define RET_ERR_BIND				5
 #define RET_ERR_CLOCK_GETTIME		6
 #define RET_ERR_EXCEED_TIMEOUT		7
+#define RET_ERR_INVALID_ROLE		8
 
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
 #define NODE_NAME_LEN				32
 #define COMMAND_LEN					32
+#define MSG_LEN						4096
+#define ROLE_LEN					10
 
 #define DEFAULT_ELECTION_TIMEOUT	5
+#define DEFAULT_RANDOMIZED_TIMEOUT	500	// milliseconds
+#define DEFAULT_HEARTBEAT_INTERVAL	1
 #define SERVER_ADDR					"127.0.0.1"
 
 #define RPC_TYPE_APPEND_ENTRIES_REQ		0
@@ -79,6 +85,11 @@ typedef struct _REQUEST_VOTE_REQ {
 	int					lastLogTerm;
 } REQUEST_VOTE_REQ, *PREQUEST_VOTE_REQ;
 
+typedef struct _APPEND_ENTRIES_RES {
+	int					term;
+	int					success;
+} APPEND_ENTRIES_RES, *PAPPEND_ENTRIES_RES;
+
 typedef struct _REQUEST_VOTE_RES {
 	int					term;
 	int					voteGranted;
@@ -90,6 +101,7 @@ typedef struct _RPC_INFO {
 	union {
 		struct _APPEND_ENTRIES_REQ	append_req;
 		struct _REQUEST_VOTE_REQ	request_req;
+		struct _APPEND_ENTRIES_RES	append_res;
 		struct _REQUEST_VOTE_RES	request_res;
 		// 後で追加
 	};
@@ -99,3 +111,5 @@ int get_config(int *timeout, PNODE_INFO *nodes, int *node_num);
 int check_timeout(struct timespec *last_ts, int timeout_sec);
 int set_timeout(struct timespec *last_ts);
 int init_follower(int *myrole, struct timespec *last_ts);
+int get_role(int role, char *roleStr);
+void print_msg(char *fmt, ...);
