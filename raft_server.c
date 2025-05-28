@@ -24,6 +24,7 @@ int main(int argc, char *argv[])
 	NODE_INFO		*nodes, *pt_node, *tmp_node;
 	NODE_INFO		mynode;
 	struct timespec	ts, last_ts;
+	FILE			*fp_log, *fp_votedFor, *fp_currentTerm;
 
 	/* Initialization */
 	ret = RET_SUCCESS;
@@ -38,6 +39,7 @@ int main(int argc, char *argv[])
 	nodes = NULL;
 	pt_node = NULL;
 	tmp_node = NULL;
+	fp_log = fp_votedFor = fp_currentTerm = NULL;
 	memset(&mynode, 0, sizeof(mynode));
 	result = set_timeout(&last_ts);
 	if (result != RET_SUCCESS) {
@@ -54,8 +56,8 @@ int main(int argc, char *argv[])
 
 	/* Read a cluster configuration */
 	ret = get_config(&el_timeout, &nodes, &node_num);
-	if (ret != RET_SUCCESS) {
-		print_msg("Error: get_config() fails. (ret=%d)", ret);
+	if (ret) {
+		print_msg("Error: get_config() failed. (ret=%d)", ret);
 		goto exit;
 	}
 
@@ -72,6 +74,35 @@ int main(int argc, char *argv[])
 	if (mynode.port == 0) {
 		print_msg("Error: %s does not exist in a cluster configuration file.", argv[1]);
 		ret = RET_ERR_INVALID_ARG;
+		goto exit;
+	}
+
+	/* File open */
+	ret = create_file(&fp_currentTerm, mynode.name, CURRENTTERM_FILENAME_POSTFIX);
+	if (ret) {
+		print_msg("Error: create_file() failed. (ret=%d)", ret);
+		goto exit;
+	}
+	ret = create_file(&fp_votedFor, mynode.name, VOTEDFOR_FILENAME_POSTFIX);
+	if (ret) {
+		print_msg("Error: create_file() failed. (ret=%d)", ret);
+		goto exit;
+	}
+	ret = create_file(&fp_log, mynode.name, LOG_FILENAME_POSTFIX);
+	if (ret) {
+		print_msg("Error: create_file() failed. (ret=%d)", ret);
+		goto exit;
+	}
+
+	/* Read persistent states */
+	ret = read_currentTerm(&fp_currentTerm);
+	if (ret) {
+		print_msg("Error: read_currentTerm() failed. (ret=%d)", ret);
+		goto exit;
+	}
+	ret = read_votedFor(&fp_votedFor);
+	if (ret) {
+		print_msg("Error: read_votedFor() failed. (ret=%d)", ret);
 		goto exit;
 	}
 
@@ -129,23 +160,32 @@ int main(int argc, char *argv[])
 					currentTerm = buf.append_req.term;
 					ret = init_follower(&myrole, &last_ts);
 					if (ret != RET_SUCCESS) {
-						print_msg("Error: init_follower() fails. (ret=%d)", ret);
+						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
 					}
 				}
 
-				if (myrole != ROLE_LEADER) {
-					/* Reset election timeout */
-					result = set_timeout(&last_ts);
-					if (result != RET_SUCCESS) {
-						ret = RET_ERR_CLOCK_GETTIME;
-						goto exit;
-					}
+				if (myrole != ROLE_FOLLOWER) {
+					/* Only follower receives AppendEntries RPC */
+					break;
+				}
+
+				if (buf.append_req.term < currentTerm) {
+					/* Ignore old term RPC */
+					break;
+				}
+
+				/* Reset election timeout */
+				result = set_timeout(&last_ts);
+				if (result != RET_SUCCESS) {
+					ret = RET_ERR_CLOCK_GETTIME;
+					goto exit;
 				}
 				
 				if (!strlen(buf.append_req.entries)) {
 					/* Heartbeat */
 					print_msg("Received Heartbeat from %s", buf.name);
+					/* Send a heartbeat response??? */
 				} else {
 					/* AppendEntries RPC */
 					print_msg("Received %s from %s", buf.append_req.entries, buf.name);
@@ -169,7 +209,7 @@ int main(int argc, char *argv[])
 					currentTerm = buf.request_req.term;
 					ret = init_follower(&myrole, &last_ts);
 					if (ret != RET_SUCCESS) {
-						print_msg("Error: init_follower() fails. (ret=%d)", ret);
+						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
 					}
 				}
@@ -194,7 +234,7 @@ int main(int argc, char *argv[])
 						packet.request_res.voteGranted = RAFT_FALSE;
 					}
 
-					/* 要修正 lastLogIndex, lastLotTermチェック*/
+					/* 要修正 lastLogIndex, lastLogTermチェック*/
 
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
@@ -209,7 +249,7 @@ int main(int argc, char *argv[])
 					currentTerm = buf.append_res.term;
 					ret = init_follower(&myrole, &last_ts);
 					if (ret != RET_SUCCESS) {
-						print_msg("Error: init_follower() fails. (ret=%d)", ret);
+						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
 					}
 				}
@@ -223,7 +263,7 @@ int main(int argc, char *argv[])
 					currentTerm = buf.request_res.term;
 					ret = init_follower(&myrole, &last_ts);
 					if (ret != RET_SUCCESS) {
-						print_msg("Error: init_follower() fails. (ret=%d)", ret);
+						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
 					}
 				}
@@ -358,6 +398,17 @@ exit:
 	nodes = NULL;
 	pt_node = NULL;
 	tmp_node = NULL;
+
+	/* Close file */
+	if (fp_currentTerm) {
+		fclose(fp_currentTerm);
+	}
+	if (fp_votedFor) {
+		fclose(fp_votedFor);
+	}
+	if (fp_log) {
+		fclose(fp_log);
+	}
 
 	/* Close sockets */
 	if (mysock != -1) {
@@ -551,6 +602,96 @@ int get_role(int role, char *roleStr)
 		ret = RET_ERR_INVALID_ROLE;
 		goto exit;
 	}
+
+exit:
+	return ret;
+}
+
+int create_file(FILE **fp, char *name, char *postfix)
+{
+	int				ret = RET_SUCCESS;
+	int				result;
+	char			file_name[FILENAME_LEN] = {0};
+	struct stat		st;
+
+	snprintf(file_name, sizeof(file_name), "dat/%s%s", name, postfix);
+	result = stat(file_name, &st);
+	if (result) {
+		if (errno != ENOENT) {
+			print_msg("Error: stat() failed. (file=%s, errno=%d)", file_name, errno);
+			ret = RET_ERR_STAT;
+			goto exit;
+		}
+		*fp = fopen(file_name, "w+");
+		if (!*fp) {
+			print_msg("Error: cannot open %s.", file_name);
+			ret = RET_ERR_OPEN_FILE;
+			goto exit;
+		}
+		if (!strcmp(postfix, CURRENTTERM_FILENAME_POSTFIX)) {
+			fprintf(*fp, "0");
+			fflush(*fp);
+		}
+	} else {
+		*fp = fopen(file_name, "r+");
+		if (!*fp) {
+			print_msg("Error: cannot open %s.", file_name);
+			ret = RET_ERR_OPEN_FILE;
+			goto exit;
+		}
+	}
+
+exit:
+	return ret;
+}
+
+int read_currentTerm(FILE **fp)
+{
+	int		ret = RET_SUCCESS;
+	int		result;
+
+	result = fscanf(*fp, "%d", &currentTerm);
+	if (!result) {
+		print_msg("Error: Invalid file format (currentTerm).");
+		ret = RET_ERR_INVALID_FILE;
+		goto exit;
+	}
+
+exit:
+	return ret;
+}
+
+int read_votedFor(FILE **fp)
+{
+	int		ret = RET_SUCCESS;
+	int		result;
+	char	tmp[NODE_NAME_LEN] = {0};
+
+	result = fscanf(*fp, "%s", tmp);
+	if (!result) {
+		print_msg("Error: Invalid file format (votedFor).");
+		ret = RET_ERR_INVALID_FILE;
+		goto exit;
+	} else {
+		/* In case of content with proper format or empty */
+		strncpy(votedFor, tmp, sizeof(votedFor) - 1);
+	}
+
+exit:
+	return ret;
+}
+
+int write_currentTerm(FILE **fp)
+{
+	int		ret = RET_SUCCESS;
+	int		result;
+
+	/*result = fscanf(*fp, "%d", &currentTerm);
+	if (!result) {
+		print_msg("Error: Invalid file format (currentTerm).");
+		ret = RET_ERR_INVALID_FILE;
+		goto exit;
+	}*/
 
 exit:
 	return ret;

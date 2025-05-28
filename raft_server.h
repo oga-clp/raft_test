@@ -8,9 +8,12 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <fcntl.h>
 
 #define RET_SUCCESS					0
 #define RET_ERR_INVALID_ARG			1
@@ -21,6 +24,9 @@
 #define RET_ERR_CLOCK_GETTIME		6
 #define RET_ERR_EXCEED_TIMEOUT		7
 #define RET_ERR_INVALID_ROLE		8
+#define RET_ERR_OPEN_FILE			9
+#define RET_ERR_STAT				10
+#define RET_ERR_INVALID_FILE		11
 
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
@@ -28,11 +34,15 @@
 #define COMMAND_LEN					32
 #define MSG_LEN						4096
 #define ROLE_LEN					10
+#define FILENAME_LEN				128
 
 #define DEFAULT_ELECTION_TIMEOUT	5
 #define DEFAULT_RANDOMIZED_TIMEOUT	500	// milliseconds
 #define DEFAULT_HEARTBEAT_INTERVAL	1
 #define SERVER_ADDR					"127.0.0.1"
+#define LOG_FILENAME_POSTFIX			"_log.dat"
+#define VOTEDFOR_FILENAME_POSTFIX		"_votedFor.dat"
+#define CURRENTTERM_FILENAME_POSTFIX	"_currentTerm.dat"
 
 #define RPC_TYPE_APPEND_ENTRIES_REQ		0
 #define RPC_TYPE_REQUEST_VOTE_REQ		1
@@ -112,4 +122,9 @@ int check_timeout(struct timespec *last_ts, int timeout_sec);
 int set_timeout(struct timespec *last_ts);
 int init_follower(int *myrole, struct timespec *last_ts);
 int get_role(int role, char *roleStr);
+int create_file(FILE **fp, char *name, char *postfix);
+int read_currentTerm(FILE **fp);
+int read_votedFor(FILE **fp);
+int write_currentTerm(FILE **fp);
+int write_votedFor(FILE **fp);
 void print_msg(char *fmt, ...);
