@@ -27,6 +27,7 @@
 #define RET_ERR_OPEN_FILE			9
 #define RET_ERR_STAT				10
 #define RET_ERR_INVALID_FILE		11
+#define RET_ERR_FTRUNCATE			12
 
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
@@ -47,10 +48,14 @@
 #define RPC_TYPE_APPEND_ENTRIES_REQ		0
 #define RPC_TYPE_REQUEST_VOTE_REQ		1
 #define RPC_TYPE_INSTALL_SNAPSHOT_REQ	2
+#define RPC_TYPE_GET_COMMAND_REQ		3
+#define RPC_TYPE_SET_COMMAND_REQ		4
 
 #define RPC_TYPE_APPEND_ENTRIES_RES		10
 #define RPC_TYPE_REQUEST_VOTE_RES		11
 #define RPC_TYPE_INSTALL_SNAPSHOT_RES	12
+#define RPC_TYPE_GET_COMMAND_RES		13
+#define RPC_TYPE_SET_COMMAND_RES		14
 
 #define ROLE_FOLLOWER					0
 #define ROLE_CANDIDATE					1
@@ -95,6 +100,14 @@ typedef struct _REQUEST_VOTE_REQ {
 	int					lastLogTerm;
 } REQUEST_VOTE_REQ, *PREQUEST_VOTE_REQ;
 
+typedef struct _GET_COMMAND_REQ {
+	int					nop;	// 一旦最後にコミットされたログエントリを取得するだけ。nopの値は何でもよい。
+} GET_COMMAND_REQ, *PGET_COMMAND_REQ;
+
+typedef struct _SET_COMMAND_REQ {
+	int					committed;
+} SET_COMMAND_REQ, *PSET_COMMAND_REQ;
+
 typedef struct _APPEND_ENTRIES_RES {
 	int					term;
 	int					success;
@@ -105,22 +118,34 @@ typedef struct _REQUEST_VOTE_RES {
 	int					voteGranted;
 } REQUEST_VOTE_RES, *PREQUEST_VOTE_RES;
 
+typedef struct _GET_COMMAND_RES {
+	struct _LOG_INFO	log;	// 一旦最後にコミットされたログエントリを取得するだけ
+} GET_COMMAND_RES, *PGET_COMMAND_RES;
+
+typedef struct _SET_COMMAND_RES {
+	int					committed;
+} SET_COMMAND_RES, *PSET_COMMAND_RES;
+
 typedef struct _RPC_INFO {
 	int			type;					// RPC type
 	char		name[NODE_NAME_LEN];	// Source
 	union {
 		struct _APPEND_ENTRIES_REQ	append_req;
 		struct _REQUEST_VOTE_REQ	request_req;
+		struct _GET_COMMAND_REQ		getcommand_req;
+		struct _SET_COMMAND_REQ		setcommand_req;
 		struct _APPEND_ENTRIES_RES	append_res;
 		struct _REQUEST_VOTE_RES	request_res;
+		struct _GET_COMMAND_RES		getcommand_res;
+		struct _SET_COMMAND_RES		setcommand_res;
 		// 後で追加
 	};
 } RPC_INFO, *PRPC_INFO;
 
 int get_config(int *timeout, PNODE_INFO *nodes, int *node_num);
-int check_timeout(struct timespec *last_ts, int timeout_sec);
+int check_timeout(struct timespec *last_ts, int timeout_sec, char *id);
 int set_timeout(struct timespec *last_ts);
-int init_follower(int *myrole, struct timespec *last_ts);
+int init_follower(int *myrole, struct timespec *last_ts, FILE **fp);
 int get_role(int role, char *roleStr);
 int create_file(FILE **fp, char *name, char *postfix);
 int read_currentTerm(FILE **fp);
@@ -128,3 +153,6 @@ int read_votedFor(FILE **fp);
 int write_currentTerm(FILE **fp);
 int write_votedFor(FILE **fp);
 void print_msg(char *fmt, ...);
+
+int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);
+void print_msg_client(char *fmt, ...);

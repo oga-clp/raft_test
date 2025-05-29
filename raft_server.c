@@ -158,7 +158,14 @@ int main(int argc, char *argv[])
 					/* Should be demoted */
 					/* If I am a CANDIDATE, the same term means that a new LEADER emerges. */
 					currentTerm = buf.append_req.term;
-					ret = init_follower(&myrole, &last_ts);
+
+					ret = write_currentTerm(&fp_currentTerm);
+					if (ret != RET_SUCCESS) {
+						print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+						goto exit;
+					}
+
+					ret = init_follower(&myrole, &last_ts, &fp_votedFor);
 					if (ret != RET_SUCCESS) {
 						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
@@ -207,7 +214,14 @@ int main(int argc, char *argv[])
 				if (buf.request_req.term > currentTerm) {
 					/* Should be demoted */
 					currentTerm = buf.request_req.term;
-					ret = init_follower(&myrole, &last_ts);
+
+					ret = write_currentTerm(&fp_currentTerm);
+					if (ret != RET_SUCCESS) {
+						print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+						goto exit;
+					}
+
+					ret = init_follower(&myrole, &last_ts, &fp_votedFor);
 					if (ret != RET_SUCCESS) {
 						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
@@ -228,6 +242,11 @@ int main(int argc, char *argv[])
 							/* Vote */
 							packet.request_res.voteGranted = RAFT_TRUE;
 							strncpy(votedFor, buf.request_req.candidateId, sizeof(votedFor) - 1);
+							ret = write_votedFor(&fp_votedFor);
+							if (ret != RET_SUCCESS) {
+								print_msg("Error: write_votedFor() failed. (ret=%d)", ret);
+								goto exit;
+							}
 						}
 					} else {
 						/* Cadidate's term is old, not vote */
@@ -247,7 +266,14 @@ int main(int argc, char *argv[])
 				if (myrole == ROLE_LEADER && buf.append_res.term > currentTerm) {
 					/* Should be demoted */
 					currentTerm = buf.append_res.term;
-					ret = init_follower(&myrole, &last_ts);
+
+					ret = write_currentTerm(&fp_currentTerm);
+					if (ret != RET_SUCCESS) {
+						print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+						goto exit;
+					}
+
+					ret = init_follower(&myrole, &last_ts, &fp_votedFor);
 					if (ret != RET_SUCCESS) {
 						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
@@ -261,7 +287,14 @@ int main(int argc, char *argv[])
 				if (buf.request_res.term > currentTerm) {
 					/* Should be demoted */
 					currentTerm = buf.request_res.term;
-					ret = init_follower(&myrole, &last_ts);
+
+					ret = write_currentTerm(&fp_currentTerm);
+					if (ret != RET_SUCCESS) {
+						print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+						goto exit;
+					}
+
+					ret = init_follower(&myrole, &last_ts, &fp_votedFor);
 					if (ret != RET_SUCCESS) {
 						print_msg("Error: init_follower() failed. (ret=%d)", ret);
 						goto exit;
@@ -284,11 +317,18 @@ int main(int argc, char *argv[])
 
 		if (myrole == ROLE_FOLLOWER) {
 			/* Check election timeout */
-			result = check_timeout(&last_ts, el_timeout);
+			result = check_timeout(&last_ts, el_timeout, mynode.name);
 			if (result == RET_ERR_EXCEED_TIMEOUT) {
 				print_msg("Role switched from FOLLOWER to CANDIDATE.");
 				myrole = ROLE_CANDIDATE;
 				currentTerm++;
+
+				ret = write_currentTerm(&fp_currentTerm);
+				if (ret != RET_SUCCESS) {
+					print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+					goto exit;
+				}
+				
 				/* Vote for itself  */
 				voted = 1;
 				send_requestvote = 0;
@@ -300,7 +340,7 @@ int main(int argc, char *argv[])
 
 		if (myrole == ROLE_CANDIDATE) {
 			/* Check votes obtained */
-			if (voted > node_num / 2 + 1) {
+			if (voted >= node_num / 2 + 1) {
 				print_msg("Role switched from CANDIDATE to LEADER.");
 				result = set_timeout(&last_ts);
 				if (result != RET_SUCCESS) {
@@ -310,10 +350,17 @@ int main(int argc, char *argv[])
 				myrole = ROLE_LEADER;
 			} else {
 				/* Check election timeout */
-				result = check_timeout(&last_ts, el_timeout);
+				result = check_timeout(&last_ts, el_timeout, mynode.name);
 				if (result == RET_ERR_EXCEED_TIMEOUT) {
 					print_msg("Election timeout. Restart election.");
 					currentTerm++;
+
+					ret = write_currentTerm(&fp_currentTerm);
+					if (ret != RET_SUCCESS) {
+						print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
+						goto exit;
+					}
+
 					/* Vote for itself  */
 					voted = 1;
 					send_requestvote = 0;
@@ -353,7 +400,7 @@ int main(int argc, char *argv[])
 
 		if (myrole == ROLE_LEADER) {
 			/* Check heartbeat send interval */
-			result = check_timeout(&last_ts, hb_interval);
+			result = check_timeout(&last_ts, hb_interval, mynode.name);
 			if (result == RET_SUCCESS) {
 				continue;
 			}
@@ -456,7 +503,7 @@ int get_config(int *timeout, PNODE_INFO *nodes, int *node_num)
 		}
 
 		/* Allocate memory spaces for a node information */
-		*node_num++;
+		(*node_num)++;
 		tmp_node = (NODE_INFO *)malloc(sizeof(NODE_INFO));
 		if (!tmp_node) {
 			print_msg("Error: malloc() failed. (errno=%d)", errno);
@@ -509,7 +556,7 @@ exit:
 	return ret;
 }
 
-int check_timeout(struct timespec *last_ts, int timeout_sec)
+int check_timeout(struct timespec *last_ts, int timeout_sec, char *id)
 {
 	int ret;
 	int result;
@@ -520,7 +567,7 @@ int check_timeout(struct timespec *last_ts, int timeout_sec)
 	ret = RET_SUCCESS;
 
 	/* Randomized timeout */
-	srand((unsigned)time(NULL));
+	srand((unsigned)time(NULL) + (unsigned)id);
 	randTime = rand() % DEFAULT_RANDOMIZED_TIMEOUT;
 
 	result = clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -532,6 +579,7 @@ int check_timeout(struct timespec *last_ts, int timeout_sec)
 		if ((ts.tv_sec + (double)ts.tv_nsec / 1000000000) - (last_ts->tv_sec + (double)last_ts->tv_nsec / 1000000000) - (double)randTime / 1000 > timeout_sec) {
 			*last_ts = ts;
 			ret = RET_ERR_EXCEED_TIMEOUT;
+			//print_msg("rand time: %f sec", (double)randTime / 1000);
 			goto exit;
 		}
 	}
@@ -559,7 +607,7 @@ exit:
 	return ret;
 }
 
-int init_follower(int *myrole, struct timespec *last_ts)
+int init_follower(int *myrole, struct timespec *last_ts, FILE **fp)
 {
 	int		ret = RET_SUCCESS;
 	int		result;
@@ -573,7 +621,16 @@ int init_follower(int *myrole, struct timespec *last_ts)
 
 	*myrole = ROLE_FOLLOWER;
 	memset(votedFor, 0, sizeof(votedFor));
+	ret = write_votedFor(fp);
+	if (ret != RET_SUCCESS) {
+		print_msg("Error: write_votedFor() failed. (ret=%d)", ret);
+		goto exit;
+	}
 	ret = set_timeout(last_ts);
+	if (ret != RET_SUCCESS) {
+		print_msg("Error: set_timeout() failed. (ret=%d)", ret);
+		goto exit;
+	}
 
 	if (strcmp(roleBefore, "FOLLOWER")) {
 		print_msg("Role switched from %s to FOLLOWER.", roleBefore);
@@ -685,13 +742,41 @@ int write_currentTerm(FILE **fp)
 {
 	int		ret = RET_SUCCESS;
 	int		result;
+	int		fd;
 
-	/*result = fscanf(*fp, "%d", &currentTerm);
-	if (!result) {
-		print_msg("Error: Invalid file format (currentTerm).");
-		ret = RET_ERR_INVALID_FILE;
+	fd = fileno(*fp);
+	result = ftruncate(fd, 0);
+	if (result) {
+		print_msg("Error: ftruncate() failed. (errno=%d)", errno);
+		ret = RET_ERR_FTRUNCATE;
 		goto exit;
-	}*/
+	}
+	rewind(*fp);
+
+	fprintf(*fp, "%d", currentTerm);
+	fflush(*fp);
+
+exit:
+	return ret;
+}
+
+int write_votedFor(FILE **fp)
+{
+	int		ret = RET_SUCCESS;
+	int		result;
+	int		fd;
+
+	fd = fileno(*fp);
+	result = ftruncate(fd, 0);
+	if (result) {
+		print_msg("Error: ftruncate() failed. (errno=%d)", errno);
+		ret = RET_ERR_FTRUNCATE;
+		goto exit;
+	}
+	rewind(*fp);
+
+	fprintf(*fp, "%s", votedFor);
+	fflush(*fp);
 
 exit:
 	return ret;
