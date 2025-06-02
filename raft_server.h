@@ -15,6 +15,9 @@
 #include <time.h>
 #include <fcntl.h>
 
+#define RAFT_FALSE						0
+#define RAFT_TRUE						1
+
 #define RET_SUCCESS					0
 #define RET_ERR_INVALID_ARG			1
 #define RET_ERR_OPEN_CONFIG_FILE	2
@@ -28,6 +31,10 @@
 #define RET_ERR_STAT				10
 #define RET_ERR_INVALID_FILE		11
 #define RET_ERR_FTRUNCATE			12
+#define RET_ERR_INVALID_COMMAND		13
+#define RET_ERR_RECVFROM			14
+#define RET_ERR_COMMAND				15
+#define RET_ERR_INVALID_NODE_NAME	16
 
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
@@ -36,6 +43,8 @@
 #define MSG_LEN						4096
 #define ROLE_LEN					10
 #define FILENAME_LEN				128
+#define COMMAND_TYPE_LEN			8
+#define COMMAND_OPTION_LEN			128
 
 #define DEFAULT_ELECTION_TIMEOUT	5
 #define DEFAULT_RANDOMIZED_TIMEOUT	500	// milliseconds
@@ -61,8 +70,12 @@
 #define ROLE_CANDIDATE					1
 #define ROLE_LEADER						2
 
-#define RAFT_FALSE						0
-#define RAFT_TRUE						1
+#define DEFAULT_CLIENT_TIMEOUT		3
+#define DEFAULT_CLIENT_PORT			3100
+#define DEFAULT_CLIENT_NAME			"client"
+
+#define COMMAND_TYPE_GET				"GET"
+#define COMMAND_TYPE_SET				"SET"
 
 typedef struct _NODE_INFO {
 	char				name[NODE_NAME_LEN];
@@ -105,7 +118,7 @@ typedef struct _GET_COMMAND_REQ {
 } GET_COMMAND_REQ, *PGET_COMMAND_REQ;
 
 typedef struct _SET_COMMAND_REQ {
-	int					committed;
+	char				command[COMMAND_OPTION_LEN];
 } SET_COMMAND_REQ, *PSET_COMMAND_REQ;
 
 typedef struct _APPEND_ENTRIES_RES {
@@ -124,6 +137,7 @@ typedef struct _GET_COMMAND_RES {
 
 typedef struct _SET_COMMAND_RES {
 	int					committed;
+	char				leaderId[NODE_NAME_LEN];
 } SET_COMMAND_RES, *PSET_COMMAND_RES;
 
 typedef struct _RPC_INFO {
@@ -155,4 +169,6 @@ int write_votedFor(FILE **fp);
 void print_msg(char *fmt, ...);
 
 int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);
+int check_timeout_client(struct timespec *last_ts, int timeout_sec);
+int set_timeout_client(struct timespec *last_ts);
 void print_msg_client(char *fmt, ...);

@@ -9,6 +9,8 @@ LOG_ENTRIES_INFO	*log = NULL;
 int					commitIndex = 0;
 int					lastApplied = 0;
 
+char				leaderId[NODE_NAME_LEN] = {0};
+
 int main(int argc, char *argv[])
 {
 	int				i, ret, result;
@@ -188,6 +190,9 @@ int main(int argc, char *argv[])
 					ret = RET_ERR_CLOCK_GETTIME;
 					goto exit;
 				}
+
+				/* Save leader's ID */
+				strncpy(leaderId, buf.append_req.leaderId, sizeof(leaderId));
 				
 				if (!strlen(buf.append_req.entries)) {
 					/* Heartbeat */
@@ -262,6 +267,29 @@ int main(int argc, char *argv[])
 				break;
 			case RPC_TYPE_INSTALL_SNAPSHOT_REQ:
 				break;
+			case RPC_TYPE_GET_COMMAND_REQ:
+				break;
+			case RPC_TYPE_SET_COMMAND_REQ:
+				if (myrole == ROLE_LEADER) {
+					/* Write data to the local log */
+
+					print_msg("Write \"%s\" to the local log.", buf.setcommand_req.command);
+				} else {
+					/* Send response with leaderId */
+					target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+					RPC_INFO packet;
+					memset(&packet, 0, sizeof(packet));
+					packet.type = RPC_TYPE_SET_COMMAND_RES;
+					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+					packet.setcommand_res.committed = RAFT_FALSE;
+					strncpy(packet.setcommand_res.leaderId, leaderId, sizeof(packet.setcommand_res.leaderId) - 1);
+
+					tmp_addr.sin_port = htons((unsigned short)DEFAULT_CLIENT_PORT);
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&tmp_addr, tmp_addrlen);
+					close(target_sock);
+					print_msg("Send command response to the client (includes redirect info)");
+				}
+				break;
 			case RPC_TYPE_APPEND_ENTRIES_RES:
 				if (myrole == ROLE_LEADER && buf.append_res.term > currentTerm) {
 					/* Should be demoted */
@@ -321,8 +349,9 @@ int main(int argc, char *argv[])
 			if (result == RET_ERR_EXCEED_TIMEOUT) {
 				print_msg("Role switched from FOLLOWER to CANDIDATE.");
 				myrole = ROLE_CANDIDATE;
-				currentTerm++;
+				memset(leaderId, 0, sizeof(leaderId));
 
+				currentTerm++;
 				ret = write_currentTerm(&fp_currentTerm);
 				if (ret != RET_SUCCESS) {
 					print_msg("Error: write_currentTerm() failed. (ret=%d)", ret);
@@ -431,6 +460,9 @@ int main(int argc, char *argv[])
 
 				pt_node = pt_node->next;
 			}
+
+			/* Send latest logs */
+
 		}
 	}
 
@@ -620,6 +652,7 @@ int init_follower(int *myrole, struct timespec *last_ts, FILE **fp)
 	}
 
 	*myrole = ROLE_FOLLOWER;
+	memset(leaderId, 0, sizeof(leaderId));
 	memset(votedFor, 0, sizeof(votedFor));
 	ret = write_votedFor(fp);
 	if (ret != RET_SUCCESS) {
@@ -646,13 +679,13 @@ int get_role(int role, char *roleStr)
 	
 	switch (role) {
 	case ROLE_FOLLOWER:
-		strncpy(roleStr, "FOLLOWER", ROLE_LEN);
+		strncpy(roleStr, "FOLLOWER", ROLE_LEN - 1);
 		break;
 	case ROLE_CANDIDATE:
-		strncpy(roleStr, "CANDIDATE", ROLE_LEN);	
+		strncpy(roleStr, "CANDIDATE", ROLE_LEN - 1);	
 		break;
 	case ROLE_LEADER:
-		strncpy(roleStr, "LEADER", ROLE_LEN);
+		strncpy(roleStr, "LEADER", ROLE_LEN - 1);
 		break;
 	default:
 		print_msg("Error: Invalid role (%d)", role);
