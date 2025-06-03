@@ -9,7 +9,7 @@ int main(int argc, char *argv[])
 	int				mysock, target_sock;
 	int				sock_nonblock;
 	char			command_type[COMMAND_TYPE_LEN];
-	char			command_option[COMMAND_OPTION_LEN];
+	char			command_option[COMMAND_LEN];
 	RPC_INFO		buf;
 	NODE_INFO		*nodes, *pt_node, *tmp_node;
 	NODE_INFO		mynode;
@@ -112,7 +112,6 @@ int main(int argc, char *argv[])
 		sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 		close(target_sock);
 		print_msg_client("Send request to %s", pt_node->name);
-		pt_node = pt_node->next;
 
 		/* Receive command result*/
 		result = set_timeout_client(&last_ts);
@@ -151,6 +150,8 @@ int main(int argc, char *argv[])
 		if (received == RAFT_TRUE) {
 			break;
 		}
+
+		pt_node = pt_node->next;
 	}
 
 	if (received == RAFT_FALSE) {
@@ -186,7 +187,6 @@ int main(int argc, char *argv[])
 			sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 			close(target_sock);
 			print_msg_client("Send request to %s (redirect)", pt_node->name);
-			pt_node = pt_node->next;
 
 			/* Receive command result*/
 			result = set_timeout_client(&last_ts);

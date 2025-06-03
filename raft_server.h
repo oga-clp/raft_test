@@ -39,12 +39,13 @@
 #define BUF_SIZE					256
 #define CONF_LINE_LEN				1024
 #define NODE_NAME_LEN				32
-#define COMMAND_LEN					32
+#define COMMAND_LEN					128
+#define TERM_LEN					32
+#define LOG_LINE_LEN				COMMAND_LEN + TERM_LEN
 #define MSG_LEN						4096
 #define ROLE_LEN					10
 #define FILENAME_LEN				128
 #define COMMAND_TYPE_LEN			8
-#define COMMAND_OPTION_LEN			128
 
 #define DEFAULT_ELECTION_TIMEOUT	5
 #define DEFAULT_RANDOMIZED_TIMEOUT	500	// milliseconds
@@ -118,7 +119,7 @@ typedef struct _GET_COMMAND_REQ {
 } GET_COMMAND_REQ, *PGET_COMMAND_REQ;
 
 typedef struct _SET_COMMAND_REQ {
-	char				command[COMMAND_OPTION_LEN];
+	char				command[COMMAND_LEN];
 } SET_COMMAND_REQ, *PSET_COMMAND_REQ;
 
 typedef struct _APPEND_ENTRIES_RES {
@@ -160,12 +161,15 @@ int get_config(int *timeout, PNODE_INFO *nodes, int *node_num);
 int check_timeout(struct timespec *last_ts, int timeout_sec, char *id);
 int set_timeout(struct timespec *last_ts);
 int init_follower(int *myrole, struct timespec *last_ts, FILE **fp);
+void init_leader(PNODE_INFO *nodes, NODE_INFO mynode);
 int get_role(int role, char *roleStr);
 int create_file(FILE **fp, char *name, char *postfix);
 int read_currentTerm(FILE **fp);
 int read_votedFor(FILE **fp);
+int read_log(FILE **fp);
 int write_currentTerm(FILE **fp);
 int write_votedFor(FILE **fp);
+int write_log(FILE **fp, char *command);
 void print_msg(char *fmt, ...);
 
 int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);

@@ -10,6 +10,8 @@ int					commitIndex = 0;
 int					lastApplied = 0;
 
 char				leaderId[NODE_NAME_LEN] = {0};
+LOG_ENTRIES_INFO	*log_tail = NULL;
+int					log_tail_index = 0;
 
 int main(int argc, char *argv[])
 {
@@ -25,6 +27,7 @@ int main(int argc, char *argv[])
 	RPC_INFO		buf;
 	NODE_INFO		*nodes, *pt_node, *tmp_node;
 	NODE_INFO		mynode;
+	LOG_ENTRIES_INFO	*pt_log, *tmp_log;
 	struct timespec	ts, last_ts;
 	FILE			*fp_log, *fp_votedFor, *fp_currentTerm;
 
@@ -41,6 +44,7 @@ int main(int argc, char *argv[])
 	nodes = NULL;
 	pt_node = NULL;
 	tmp_node = NULL;
+	pt_log = NULL;
 	fp_log = fp_votedFor = fp_currentTerm = NULL;
 	memset(&mynode, 0, sizeof(mynode));
 	result = set_timeout(&last_ts);
@@ -107,6 +111,11 @@ int main(int argc, char *argv[])
 		print_msg("Error: read_votedFor() failed. (ret=%d)", ret);
 		goto exit;
 	}
+	ret = read_log(&fp_log);
+	if (ret) {
+		print_msg("Error: read_log() failed. (ret=%d)", ret);
+		goto exit;
+	}
 
 	/* Debug */
 	print_msg("election timeout: %d", el_timeout);
@@ -118,6 +127,11 @@ int main(int argc, char *argv[])
 			print_msg("name: %s, port: %d", pt_node->name, pt_node->port);
 		}
 		pt_node = pt_node->next;
+	}
+	pt_log = log;
+	while (pt_log) {
+		print_msg("I:%3d, T:%3d, %s", pt_log->index, pt_log->log.term, pt_log->log.command);
+		pt_log = pt_log->next;
 	}
 
 	/* Prepare for communication */
@@ -252,6 +266,13 @@ int main(int argc, char *argv[])
 								print_msg("Error: write_votedFor() failed. (ret=%d)", ret);
 								goto exit;
 							}
+							
+							/* Reset election timeout */
+							result = set_timeout(&last_ts);
+							if (result != RET_SUCCESS) {
+								ret = RET_ERR_CLOCK_GETTIME;
+								goto exit;
+							}
 						}
 					} else {
 						/* Cadidate's term is old, not vote */
@@ -272,8 +293,11 @@ int main(int argc, char *argv[])
 			case RPC_TYPE_SET_COMMAND_REQ:
 				if (myrole == ROLE_LEADER) {
 					/* Write data to the local log */
-
-					print_msg("Write \"%s\" to the local log.", buf.setcommand_req.command);
+					ret = write_log(&fp_log, buf.setcommand_req.command);
+					if (ret) {
+						print_msg("Error: write_log() failed. (ret=%d)", ret);
+						goto exit;
+					}
 				} else {
 					/* Send response with leaderId */
 					target_sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -377,6 +401,7 @@ int main(int argc, char *argv[])
 					goto exit;
 				}
 				myrole = ROLE_LEADER;
+				init_leader(&nodes, mynode);
 			} else {
 				/* Check election timeout */
 				result = check_timeout(&last_ts, el_timeout, mynode.name);
@@ -452,17 +477,18 @@ int main(int argc, char *argv[])
 				strncpy(packet.append_req.leaderId, mynode.name, sizeof(packet.append_req.leaderId) - 1);
 				packet.append_req.prevLogIndex = 0; //要修正
 				packet.append_req.prevLogTerm = 0; //要修正
-				packet.append_req.leaderCommit = 0; //要修正
+				packet.append_req.leaderCommit = commitIndex;
 				sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
-				//sendto(target_sock, "HELLO", 5, 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 				close(target_sock);
 				print_msg("Send Heartbeat to %s", pt_node->name);
 
 				pt_node = pt_node->next;
 			}
 
-			/* Send latest logs */
-
+			/* Send a log entry */
+			if (commitIndex != log_tail_index) {
+				//
+			}
 		}
 	}
 
@@ -477,6 +503,12 @@ exit:
 	nodes = NULL;
 	pt_node = NULL;
 	tmp_node = NULL;
+	while (pt_log) {
+		tmp_log = pt_log->next;
+		free(pt_log);
+		pt_log = tmp_log;
+	}
+	log = NULL;
 
 	/* Close file */
 	if (fp_currentTerm) {
@@ -673,6 +705,25 @@ exit:
 	return ret;
 }
 
+void init_leader(PNODE_INFO *nodes, NODE_INFO mynode)
+{
+	NODE_INFO	*pt_node = NULL;
+
+	pt_node = *nodes;
+	while (pt_node) {
+		if (!strcmp(mynode.name, pt_node->name)) {
+			pt_node = pt_node->next;
+			continue;
+		}
+
+		pt_node->nextIndex = log_tail_index + 1;
+		pt_node->matchIndex = 0;
+		pt_node = pt_node->next;
+	}
+
+	return;
+}
+
 int get_role(int role, char *roleStr)
 {
 	int		ret = RET_SUCCESS;
@@ -771,6 +822,44 @@ exit:
 	return ret;
 }
 
+int read_log(FILE **fp)
+{
+	int					ret = RET_SUCCESS;
+	int					result;
+	char				line[LOG_LINE_LEN] = {0};
+	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
+
+	while (fgets(line, LOG_LINE_LEN, *fp) != NULL) {
+		tmp_log_entry = (LOG_ENTRIES_INFO *)malloc(sizeof(LOG_ENTRIES_INFO));
+		if (!tmp_log_entry) {
+			print_msg("Error: malloc() failed. (errno=%d)", errno);
+			ret = RET_ERR_MALLOC;
+			goto exit;
+		}
+
+		result = sscanf(line, "%d %s", &(tmp_log_entry->log.term), tmp_log_entry->log.command);
+		if (result != 2) {
+			print_msg("Error: malloc() failed. (errno=%d)", errno);
+			ret = RET_ERR_INVALID_FILE;
+			goto exit;
+		}
+
+		tmp_log_entry->index = ++log_tail_index;
+		tmp_log_entry->next = NULL;
+
+		if (log == NULL) {
+			log = tmp_log_entry;
+			log_tail = tmp_log_entry;
+		} else {
+			log_tail->next = tmp_log_entry;
+			log_tail = tmp_log_entry;
+		}
+	}
+
+exit:
+	return ret;
+}
+
 int write_currentTerm(FILE **fp)
 {
 	int		ret = RET_SUCCESS;
@@ -810,6 +899,43 @@ int write_votedFor(FILE **fp)
 
 	fprintf(*fp, "%s", votedFor);
 	fflush(*fp);
+
+exit:
+	return ret;
+}
+
+int write_log(FILE **fp, char *command)
+{
+	int					ret = RET_SUCCESS;
+	int					result;
+	int					index = 0;
+	char				line[LOG_LINE_LEN] = {0};
+	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
+
+	fprintf(*fp, "%d %s\n", currentTerm, command);
+	fflush(*fp);
+
+	tmp_log_entry = (LOG_ENTRIES_INFO *)malloc(sizeof(LOG_ENTRIES_INFO));
+	if (!tmp_log_entry) {
+		print_msg("Error: malloc() failed. (errno=%d)", errno);
+		ret = RET_ERR_MALLOC;
+		goto exit;
+	}
+
+	tmp_log_entry->next = NULL;
+	tmp_log_entry->index = ++log_tail_index;
+	tmp_log_entry->log.term = currentTerm;
+	strncpy(tmp_log_entry->log.command, command, sizeof(tmp_log_entry->log.command) - 1);
+
+	if (log == NULL) {
+		log = tmp_log_entry;
+		log_tail = tmp_log_entry;
+	} else {
+		log_tail->next = tmp_log_entry;
+		log_tail = tmp_log_entry;
+	}
+
+	print_msg("Write to local log. T:%3d, %s", currentTerm, command);
 
 exit:
 	return ret;
