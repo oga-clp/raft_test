@@ -54,6 +54,7 @@
 #define LOG_FILENAME_POSTFIX			"_log.dat"
 #define VOTEDFOR_FILENAME_POSTFIX		"_votedFor.dat"
 #define CURRENTTERM_FILENAME_POSTFIX	"_currentTerm.dat"
+#define STATE_MACHINE_POSTFIX			"_stateMachine.dat"
 
 #define RPC_TYPE_APPEND_ENTRIES_REQ		0
 #define RPC_TYPE_REQUEST_VOTE_REQ		1
@@ -96,6 +97,7 @@ typedef struct _LOG_ENTRIES_INFO {
 	int							index;
 	struct _LOG_INFO			log;
 	struct _LOG_ENTRIES_INFO	*next;
+	struct _LOG_ENTRIES_INFO	*prev;
 } LOG_ENTRIES_INFO, *PLOG_ENTRIES_INFO;
 
 typedef struct _APPEND_ENTRIES_REQ {
@@ -103,7 +105,7 @@ typedef struct _APPEND_ENTRIES_REQ {
 	char				leaderId[NODE_NAME_LEN];
 	int					prevLogIndex;
 	int					prevLogTerm;
-	char				entries[COMMAND_LEN]; // まずは単一コマンドのみ実装する。
+	struct _LOG_INFO	entries; // まずは単一ログエントリのみ実装する。
 	int					leaderCommit;
 } APPEND_ENTRIES_REQ, *PAPPEND_ENTRIES_REQ;
 
@@ -169,7 +171,11 @@ int read_votedFor(FILE **fp);
 int read_log(FILE **fp);
 int write_currentTerm(FILE **fp);
 int write_votedFor(FILE **fp);
-int write_log(FILE **fp, char *command);
+int write_log(FILE **fp, int term, char *command);
+int delete_log(FILE **fp, int index);
+int get_lastLogIndex();
+int get_lastLogTerm();
+LOG_ENTRIES_INFO* get_logEntry(int index);
 void print_msg(char *fmt, ...);
 
 int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);

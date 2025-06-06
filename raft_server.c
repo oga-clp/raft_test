@@ -11,7 +11,6 @@ int					lastApplied = 0;
 
 char				leaderId[NODE_NAME_LEN] = {0};
 LOG_ENTRIES_INFO	*log_tail = NULL;
-int					log_tail_index = 0;
 
 int main(int argc, char *argv[])
 {
@@ -169,6 +168,18 @@ int main(int argc, char *argv[])
 			/* Received data */
 			switch (buf.type) {
 			case RPC_TYPE_APPEND_ENTRIES_REQ:
+				pt_node = nodes;
+				while (pt_node) {
+					if (!strcmp(buf.request_req.candidateId, pt_node->name)) {
+						break;
+					}
+					pt_node = pt_node->next;
+				}
+				if (!pt_node) {
+					/* Invalid node name */
+					break;
+				}
+
 				if ((myrole == ROLE_CANDIDATE && buf.append_req.term >= currentTerm) ||
 						(myrole != ROLE_CANDIDATE && buf.append_req.term > currentTerm)) {
 					/* Should be demoted */
@@ -193,8 +204,18 @@ int main(int argc, char *argv[])
 					break;
 				}
 
+				target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+				RPC_INFO packet;
+				memset(&packet, 0, sizeof(packet));
+				packet.type = RPC_TYPE_APPEND_ENTRIES_RES;
+				strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+				packet.append_res.term = currentTerm;
+
 				if (buf.append_req.term < currentTerm) {
-					/* Ignore old term RPC */
+					packet.append_res.success = RAFT_FALSE;
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+					close(target_sock);
+					print_msg("Send Append Entries RPC response to %s (%d)", buf.name, packet.append_res.success);
 					break;
 				}
 
@@ -207,14 +228,60 @@ int main(int argc, char *argv[])
 
 				/* Save leader's ID */
 				strncpy(leaderId, buf.append_req.leaderId, sizeof(leaderId));
-				
-				if (!strlen(buf.append_req.entries)) {
+
+				if (!strlen(buf.append_req.entries.command)) {
 					/* Heartbeat */
 					print_msg("Received Heartbeat from %s", buf.name);
 					/* Send a heartbeat response??? */
 				} else {
 					/* AppendEntries RPC */
-					print_msg("Received %s from %s", buf.append_req.entries, buf.name);
+					print_msg("Received AppendEntries RPC request from %s (%s)", buf.name, buf.append_req.entries.command);
+
+					/* Check prevLogIndex and prevLogTerm */
+					int tmp_term;
+					LOG_ENTRIES_INFO *tmp_log_info = get_logEntry(buf.append_req.prevLogIndex);
+					if (!tmp_log_info) {
+						tmp_term = 0;
+					} else {
+						tmp_term = tmp_log_info->log.term;
+					}
+					if (buf.append_req.prevLogTerm != tmp_term) {
+						packet.append_res.success = RAFT_FALSE;
+						sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+						close(target_sock);
+						print_msg("Send Append Entries RPC response to %s (%d)", buf.name, packet.append_res.success);
+						break;
+					}
+
+					/* Check log conflicts */
+					tmp_log_info = get_logEntry(buf.append_req.prevLogIndex + 1);
+					if (tmp_log_info) {
+						if (buf.append_req.entries.term != tmp_log_info->log.term) {
+							/* Delete the existing entry and all that follow it */
+							ret = delete_log(&fp_log, buf.append_req.prevLogIndex + 1);
+							if (ret) {
+								print_msg("Error: delete_log() failed. (ret=%d)", ret);
+								goto exit;
+							}
+						}
+					} else {
+						/* Add a new log entry */
+						ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+						if (ret) {
+							print_msg("Error: write_log() failed. (ret=%d)", ret);
+							goto exit;
+						}
+					}
+
+					/* Update commitIndex */
+					if (buf.append_req.leaderCommit > commitIndex) {
+						commitIndex = (buf.append_req.leaderCommit > log_tail->index) ? log_tail->index : buf.append_req.leaderCommit;
+					}
+
+					packet.append_res.success = RAFT_TRUE;
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+					close(target_sock);
+					print_msg("Send Append Entries RPC response to %s (%d)", buf.name, packet.append_res.success);
 				}
 				break;
 			case RPC_TYPE_REQUEST_VOTE_REQ:
@@ -255,8 +322,8 @@ int main(int argc, char *argv[])
 					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
 					packet.request_res.term = currentTerm;
 
-					/* Check if candidate's term is new */
-					if (buf.request_req.term == currentTerm) {
+					/* Check if candidate's term is equal or new */
+					if (buf.request_req.term >= currentTerm) {
 						if (votedFor[0] == '\0' || !strcmp(buf.request_req.candidateId, votedFor)) {
 							/* Vote */
 							packet.request_res.voteGranted = RAFT_TRUE;
@@ -293,7 +360,7 @@ int main(int argc, char *argv[])
 			case RPC_TYPE_SET_COMMAND_REQ:
 				if (myrole == ROLE_LEADER) {
 					/* Write data to the local log */
-					ret = write_log(&fp_log, buf.setcommand_req.command);
+					ret = write_log(&fp_log, currentTerm, buf.setcommand_req.command);
 					if (ret) {
 						print_msg("Error: write_log() failed. (ret=%d)", ret);
 						goto exit;
@@ -332,8 +399,26 @@ int main(int argc, char *argv[])
 					}
 				}
 
-				/* 要修正 ログチェック*/
-
+				if (buf.append_res.success == RAFT_TRUE) {
+					pt_node = nodes;
+					while (pt_node) {
+						if (!strcmp(pt_node->name, buf.name)) {
+							pt_node->matchIndex = pt_node->nextIndex;
+							pt_node->nextIndex = pt_node->nextIndex + 1;
+							break;
+						}
+						pt_node = pt_node->next;
+					}
+				} else {
+					pt_node = nodes;
+					while (pt_node) {
+						if (!strcmp(pt_node->name, buf.name)) {
+							pt_node->nextIndex = pt_node->nextIndex - 1;
+							break;
+						}
+						pt_node = pt_node->next;
+					}
+				}
 				break;
 			case RPC_TYPE_REQUEST_VOTE_RES:
 				if (buf.request_res.term > currentTerm) {
@@ -425,6 +510,14 @@ int main(int argc, char *argv[])
 
 				/* Send RequestVote RPC to all servers */
 				if (!send_requestvote) {
+					RPC_INFO packet;
+					memset(&packet, 0, sizeof(packet));
+					packet.type = RPC_TYPE_REQUEST_VOTE_REQ;
+					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+					packet.request_req.term = currentTerm;
+					strncpy(packet.request_req.candidateId, mynode.name, sizeof(packet.request_req.candidateId) - 1);
+					packet.request_req.lastLogIndex = get_lastLogIndex();
+					packet.request_req.lastLogTerm = get_lastLogTerm();
 					pt_node = nodes;
 					while (pt_node) {
 						if (!strcmp(mynode.name, pt_node->name)) {
@@ -432,15 +525,6 @@ int main(int argc, char *argv[])
 							continue;
 						}
 						target_sock = socket(AF_INET, SOCK_DGRAM, 0);
-						
-						RPC_INFO packet;
-						memset(&packet, 0, sizeof(packet));
-						packet.type = RPC_TYPE_REQUEST_VOTE_REQ;
-						strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
-						packet.request_req.term = currentTerm;
-						strncpy(packet.request_req.candidateId, mynode.name, sizeof(packet.request_req.candidateId) - 1);
-						packet.request_req.lastLogIndex = 0; //要修正
-						packet.request_req.lastLogTerm = 0; //要修正
 						sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 						close(target_sock);
 						print_msg("Send RequestVote RPC request to %s", pt_node->name);
@@ -455,40 +539,104 @@ int main(int argc, char *argv[])
 		if (myrole == ROLE_LEADER) {
 			/* Check heartbeat send interval */
 			result = check_timeout(&last_ts, hb_interval, mynode.name);
-			if (result == RET_SUCCESS) {
-				continue;
-			}
-
-			/* Send Heartbeat to all servers */
-			pt_node = nodes;
-			while (pt_node) {
-				if (!strcmp(mynode.name, pt_node->name)) {
-					pt_node = pt_node->next;
-					continue;
-				}
-				target_sock = socket(AF_INET, SOCK_DGRAM, 0);
-				
-				/* Send a heartbeat packet */
+			if (result == RET_ERR_EXCEED_TIMEOUT) {
+				/* Send Heartbeat to all servers */
 				RPC_INFO packet;
 				memset(&packet, 0, sizeof(packet));
 				packet.type = RPC_TYPE_APPEND_ENTRIES_REQ;
 				strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
 				packet.append_req.term = currentTerm;
 				strncpy(packet.append_req.leaderId, mynode.name, sizeof(packet.append_req.leaderId) - 1);
-				packet.append_req.prevLogIndex = 0; //要修正
-				packet.append_req.prevLogTerm = 0; //要修正
+				packet.append_req.prevLogIndex = 0; // not use
+				packet.append_req.prevLogTerm = 0; // not use
 				packet.append_req.leaderCommit = commitIndex;
-				sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
-				close(target_sock);
-				print_msg("Send Heartbeat to %s", pt_node->name);
+				pt_node = nodes;
+				while (pt_node) {
+					if (!strcmp(mynode.name, pt_node->name)) {
+						pt_node = pt_node->next;
+						continue;
+					}
+					target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+					close(target_sock);
+					print_msg("Send Heartbeat to %s", pt_node->name);
 
-				pt_node = pt_node->next;
+					pt_node = pt_node->next;
+				}
 			}
 
-			/* Send a log entry */
-			if (commitIndex != log_tail_index) {
-				//
+			/* Check commitIndex */
+			int committed_all = 0;
+			for (pt_log = log_tail; pt_log != NULL ; pt_log = pt_log->prev) {
+				int committed = 0;
+				pt_node = nodes;
+
+				if (pt_log->log.term != currentTerm) {
+					break;
+				}
+
+				if (pt_log->index <= commitIndex) {
+					break;
+				}
+
+				while (pt_node) {
+					if (pt_node->matchIndex >= pt_log->index) {
+						committed++;
+					}
+					pt_node = pt_node->next;
+				}
+
+				if (committed >= node_num / 2 + 1) {
+					commitIndex = pt_log->index;
+					if (committed == node_num) {
+						committed_all = 1;
+					}
+					break;
+				}
 			}
+			
+			/* Send AppendEntries RPC */
+			if (commitIndex != get_lastLogIndex() || !committed_all) {
+				pt_node = nodes;
+				while (pt_node) {
+					if (!strcmp(mynode.name, pt_node->name)) {
+						pt_node = pt_node->next;
+						continue;
+					}
+					if (pt_node->nextIndex > get_lastLogIndex()) {
+						pt_node = pt_node->next;
+						continue;
+					}
+
+					target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+					RPC_INFO packet;
+					LOG_ENTRIES_INFO *tmp_log_info;
+					memset(&packet, 0, sizeof(packet));
+					packet.type = RPC_TYPE_APPEND_ENTRIES_REQ;
+					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+					packet.append_req.term = currentTerm;
+					strncpy(packet.append_req.leaderId, mynode.name, sizeof(packet.append_req.leaderId) - 1);
+					packet.append_req.prevLogIndex = pt_node->nextIndex - 1;
+					tmp_log_info = get_logEntry(pt_node->nextIndex - 1);
+					if (!tmp_log_info) {
+						packet.append_req.prevLogTerm = 0;
+					} else {
+						packet.append_req.prevLogTerm = tmp_log_info->log.term;
+					}
+					tmp_log_info = get_logEntry(pt_node->nextIndex);
+					print_msg("%d", pt_node->nextIndex);
+					packet.append_req.entries.term = tmp_log_info->log.term;
+					strncpy(packet.append_req.entries.command, tmp_log_info->log.command, sizeof(packet.append_req.entries.command) - 1);
+					packet.append_req.leaderCommit = commitIndex;
+					
+					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
+					close(target_sock);
+
+					//print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries);
+					pt_node = pt_node->next;
+				}
+			}
+			usleep(100000);
 		}
 	}
 
@@ -716,7 +864,7 @@ void init_leader(PNODE_INFO *nodes, NODE_INFO mynode)
 			continue;
 		}
 
-		pt_node->nextIndex = log_tail_index + 1;
+		pt_node->nextIndex = get_lastLogIndex() + 1;
 		pt_node->matchIndex = 0;
 		pt_node = pt_node->next;
 	}
@@ -844,13 +992,15 @@ int read_log(FILE **fp)
 			goto exit;
 		}
 
-		tmp_log_entry->index = ++log_tail_index;
+		tmp_log_entry->index = get_lastLogIndex() + 1;
 		tmp_log_entry->next = NULL;
 
 		if (log == NULL) {
+			tmp_log_entry->prev = NULL;
 			log = tmp_log_entry;
 			log_tail = tmp_log_entry;
 		} else {
+			tmp_log_entry->prev = log_tail;
 			log_tail->next = tmp_log_entry;
 			log_tail = tmp_log_entry;
 		}
@@ -904,7 +1054,7 @@ exit:
 	return ret;
 }
 
-int write_log(FILE **fp, char *command)
+int write_log(FILE **fp, int term, char *command)
 {
 	int					ret = RET_SUCCESS;
 	int					result;
@@ -912,7 +1062,7 @@ int write_log(FILE **fp, char *command)
 	char				line[LOG_LINE_LEN] = {0};
 	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
 
-	fprintf(*fp, "%d %s\n", currentTerm, command);
+	fprintf(*fp, "%d %s\n", term, command);
 	fflush(*fp);
 
 	tmp_log_entry = (LOG_ENTRIES_INFO *)malloc(sizeof(LOG_ENTRIES_INFO));
@@ -923,22 +1073,109 @@ int write_log(FILE **fp, char *command)
 	}
 
 	tmp_log_entry->next = NULL;
-	tmp_log_entry->index = ++log_tail_index;
-	tmp_log_entry->log.term = currentTerm;
+	tmp_log_entry->index = get_lastLogIndex() + 1;
+	tmp_log_entry->log.term = term;
 	strncpy(tmp_log_entry->log.command, command, sizeof(tmp_log_entry->log.command) - 1);
 
 	if (log == NULL) {
+		tmp_log_entry->prev = NULL;
 		log = tmp_log_entry;
 		log_tail = tmp_log_entry;
 	} else {
+		tmp_log_entry->prev = log_tail;
 		log_tail->next = tmp_log_entry;
 		log_tail = tmp_log_entry;
 	}
 
-	print_msg("Write to local log. T:%3d, %s", currentTerm, command);
+	print_msg("Write to local log. T:%3d, %s", term, command);
 
 exit:
 	return ret;
+}
+
+int delete_log(FILE **fp, int index)
+{
+	int					ret = RET_SUCCESS;
+	int					result;
+	int					fd;
+	long				truncate_pos = 0;
+	int					cur_index = 1;
+	char 				line[LOG_LINE_LEN] = {0};
+	LOG_ENTRIES_INFO	*pt_log = NULL;
+	LOG_ENTRIES_INFO	*tmp_log = NULL;
+
+	rewind(*fp);
+	while (fgets(line, sizeof(line), *fp)) {
+		if (cur_index == index) {
+			break;
+		}
+		truncate_pos = ftell(*fp);
+		cur_index++;
+	}
+
+	fd = fileno(*fp);
+	result = ftruncate(fd, truncate_pos);
+	if (result) {
+		print_msg("Error: ftruncate() failed. (errno=%d)", errno);
+		ret = RET_ERR_FTRUNCATE;
+		goto exit;
+	}
+	fseek(*fp, 0, SEEK_END);
+
+	pt_log = log_tail;
+	while (pt_log) {
+		if (pt_log->index >= index) {
+			tmp_log = pt_log->prev;
+			if (tmp_log) {
+				pt_log->prev->next = NULL;
+			}
+			free(pt_log);
+			pt_log = tmp_log;
+		} else {
+			break;
+		}
+	}
+
+	log_tail = pt_log;
+	if (log_tail == NULL) {
+		log = NULL;
+	}
+
+exit:
+	return ret;
+}
+
+int get_lastLogIndex() {
+	if (log == NULL) {
+		return 0;
+	} else {
+		return log_tail->index;
+	}
+}
+
+int get_lastLogTerm() {
+	if (log == NULL) {
+		return 0;
+	} else {
+		return log_tail->log.term;
+	}
+}
+
+LOG_ENTRIES_INFO* get_logEntry(int index) {
+	LOG_ENTRIES_INFO	*pt_log = NULL;
+
+	if (index == 0) {
+		return NULL;
+	} else {
+		pt_log = log;
+		while (pt_log) {
+			if (index == pt_log->index) {
+				return pt_log;
+			}
+			pt_log = pt_log->next;
+		}
+		return NULL;
+	}
 }
 
 void print_msg(char *fmt, ...)
