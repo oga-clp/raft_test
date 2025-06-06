@@ -413,7 +413,9 @@ int main(int argc, char *argv[])
 					pt_node = nodes;
 					while (pt_node) {
 						if (!strcmp(pt_node->name, buf.name)) {
-							pt_node->nextIndex = pt_node->nextIndex - 1;
+							if (pt_node->nextIndex - 1 > pt_node->matchIndex) {
+								pt_node->nextIndex = pt_node->nextIndex - 1;
+							}
 							break;
 						}
 						pt_node = pt_node->next;
@@ -636,7 +638,6 @@ int main(int argc, char *argv[])
 					pt_node = pt_node->next;
 				}
 			}
-			usleep(100000);
 		}
 	}
 
