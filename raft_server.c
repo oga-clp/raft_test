@@ -11,6 +11,7 @@ int					lastApplied = 0;
 
 char				leaderId[NODE_NAME_LEN] = {0};
 LOG_ENTRIES_INFO	*log_tail = NULL;
+LOG_ENTRIES_INFO	*log_lastApplied = NULL;
 
 int main(int argc, char *argv[])
 {
@@ -28,7 +29,7 @@ int main(int argc, char *argv[])
 	NODE_INFO		mynode;
 	LOG_ENTRIES_INFO	*pt_log, *tmp_log;
 	struct timespec	ts, last_ts;
-	FILE			*fp_log, *fp_votedFor, *fp_currentTerm;
+	FILE			*fp_log, *fp_votedFor, *fp_currentTerm, *fp_stateMachine;
 
 	/* Initialization */
 	ret = RET_SUCCESS;
@@ -44,7 +45,7 @@ int main(int argc, char *argv[])
 	pt_node = NULL;
 	tmp_node = NULL;
 	pt_log = NULL;
-	fp_log = fp_votedFor = fp_currentTerm = NULL;
+	fp_log = fp_votedFor = fp_currentTerm = fp_stateMachine = NULL;
 	memset(&mynode, 0, sizeof(mynode));
 	result = set_timeout(&last_ts);
 	if (result != RET_SUCCESS) {
@@ -94,6 +95,11 @@ int main(int argc, char *argv[])
 		goto exit;
 	}
 	ret = create_file(&fp_log, mynode.name, LOG_FILENAME_POSTFIX);
+	if (ret) {
+		print_msg("Error: create_file() failed. (ret=%d)", ret);
+		goto exit;
+	}
+	ret = create_file(&fp_stateMachine, mynode.name, STATEMACHINE_FILENAME_POSTFIX);
 	if (ret) {
 		print_msg("Error: create_file() failed. (ret=%d)", ret);
 		goto exit;
@@ -237,6 +243,12 @@ int main(int argc, char *argv[])
 					/* AppendEntries RPC */
 					print_msg("Received AppendEntries RPC request from %s (%s)", buf.name, buf.append_req.entries.command);
 
+					/* Debug */
+					print_msg("leaderId:%s, prevLogIndex:%d, prevLogTerm:%d, entries(term):%d, entries(command):%s, leaderCommit:%d",
+						buf.append_req.leaderId, buf.append_req.prevLogIndex, buf.append_req.prevLogTerm,
+						buf.append_req.entries.term, buf.append_req.entries.command, buf.append_req.leaderCommit);
+					print_msg("lastApplied:%d, commitIndex:%d", lastApplied, commitIndex);
+
 					/* Check prevLogIndex and prevLogTerm */
 					int tmp_term;
 					LOG_ENTRIES_INFO *tmp_log_info = get_logEntry(buf.append_req.prevLogIndex);
@@ -264,13 +276,13 @@ int main(int argc, char *argv[])
 								goto exit;
 							}
 						}
-					} else {
-						/* Add a new log entry */
-						ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
-						if (ret) {
-							print_msg("Error: write_log() failed. (ret=%d)", ret);
-							goto exit;
-						}
+					}
+
+					/* Add a new log entry */
+					ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+					if (ret) {
+						print_msg("Error: write_log() failed. (ret=%d)", ret);
+						goto exit;
 					}
 
 					/* Update commitIndex */
@@ -569,10 +581,8 @@ int main(int argc, char *argv[])
 
 			/* Check commitIndex */
 			int committed_all = 0;
+			int committed = 0;
 			for (pt_log = log_tail; pt_log != NULL ; pt_log = pt_log->prev) {
-				int committed = 0;
-				pt_node = nodes;
-
 				if (pt_log->log.term != currentTerm) {
 					break;
 				}
@@ -581,7 +591,13 @@ int main(int argc, char *argv[])
 					break;
 				}
 
+				committed = 1; // 1 means my own commit
+				pt_node = nodes;
 				while (pt_node) {
+					if (!strcmp(mynode.name, pt_node->name)) {
+						pt_node = pt_node->next;
+						continue;
+					}
 					if (pt_node->matchIndex >= pt_log->index) {
 						committed++;
 					}
@@ -596,12 +612,19 @@ int main(int argc, char *argv[])
 					break;
 				}
 			}
+
+			/* Reply to client */
+
 			
 			/* Send AppendEntries RPC */
 			if (commitIndex != get_lastLogIndex() || !committed_all) {
 				pt_node = nodes;
 				while (pt_node) {
 					if (!strcmp(mynode.name, pt_node->name)) {
+						pt_node = pt_node->next;
+						continue;
+					}
+					if (pt_node->matchIndex == get_lastLogIndex()) {
 						pt_node = pt_node->next;
 						continue;
 					}
@@ -626,7 +649,6 @@ int main(int argc, char *argv[])
 						packet.append_req.prevLogTerm = tmp_log_info->log.term;
 					}
 					tmp_log_info = get_logEntry(pt_node->nextIndex);
-					print_msg("%d", pt_node->nextIndex);
 					packet.append_req.entries.term = tmp_log_info->log.term;
 					strncpy(packet.append_req.entries.command, tmp_log_info->log.command, sizeof(packet.append_req.entries.command) - 1);
 					packet.append_req.leaderCommit = commitIndex;
@@ -634,11 +656,14 @@ int main(int argc, char *argv[])
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
 
-					//print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries);
+					print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries.command);
 					pt_node = pt_node->next;
 				}
 			}
 		}
+
+		/* Update state machine */
+		update_stateMachine(&fp_stateMachine);
 	}
 
 exit:
@@ -668,6 +693,9 @@ exit:
 	}
 	if (fp_log) {
 		fclose(fp_log);
+	}
+	if (fp_stateMachine) {
+		fclose(fp_stateMachine);
 	}
 
 	/* Close sockets */
@@ -901,6 +929,7 @@ int create_file(FILE **fp, char *name, char *postfix)
 {
 	int				ret = RET_SUCCESS;
 	int				result;
+	int				fd;
 	char			file_name[FILENAME_LEN] = {0};
 	struct stat		st;
 
@@ -928,6 +957,16 @@ int create_file(FILE **fp, char *name, char *postfix)
 			print_msg("Error: cannot open %s.", file_name);
 			ret = RET_ERR_OPEN_FILE;
 			goto exit;
+		}
+		if (!strcmp(postfix, STATEMACHINE_FILENAME_POSTFIX)) {
+			fd = fileno(*fp);
+			result = ftruncate(fd, 0);
+			if (result) {
+				print_msg("Error: ftruncate() failed. (errno=%d)", errno);
+				ret = RET_ERR_FTRUNCATE;
+				goto exit;
+			}
+			rewind(*fp);
 		}
 	}
 
@@ -1177,6 +1216,26 @@ LOG_ENTRIES_INFO* get_logEntry(int index) {
 		}
 		return NULL;
 	}
+}
+
+void update_stateMachine(FILE **fp)
+{
+	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
+
+	if (lastApplied == commitIndex) {
+		return;
+	}
+
+	tmp_log_entry = get_logEntry(lastApplied + 1);
+
+	while (lastApplied != commitIndex && tmp_log_entry) {
+		fprintf(*fp, "%s\n", tmp_log_entry->log.command);
+		fflush(*fp);
+		lastApplied++;
+		tmp_log_entry = tmp_log_entry->next;
+	}
+
+	return;
 }
 
 void print_msg(char *fmt, ...)

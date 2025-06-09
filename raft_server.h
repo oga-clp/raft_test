@@ -54,7 +54,7 @@
 #define LOG_FILENAME_POSTFIX			"_log.dat"
 #define VOTEDFOR_FILENAME_POSTFIX		"_votedFor.dat"
 #define CURRENTTERM_FILENAME_POSTFIX	"_currentTerm.dat"
-#define STATE_MACHINE_POSTFIX			"_stateMachine.dat"
+#define STATEMACHINE_FILENAME_POSTFIX	"_stateMachine.dat"
 
 #define RPC_TYPE_APPEND_ENTRIES_REQ		0
 #define RPC_TYPE_REQUEST_VOTE_REQ		1
@@ -176,6 +176,7 @@ int delete_log(FILE **fp, int index);
 int get_lastLogIndex();
 int get_lastLogTerm();
 LOG_ENTRIES_INFO* get_logEntry(int index);
+void update_stateMachine(FILE **fp);
 void print_msg(char *fmt, ...);
 
 int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);
