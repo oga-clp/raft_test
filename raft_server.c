@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
 
 				if (!strlen(buf.append_req.entries.command)) {
 					/* Heartbeat */
-					print_msg("Received Heartbeat from %s", buf.name);
+					print_msg("Received Heartbeat from %s. lastApplied:%d, commitIndex:%d", buf.name, lastApplied, commitIndex);
 					/* Send a heartbeat response??? */
 				} else {
 					/* AppendEntries RPC */
@@ -275,26 +275,34 @@ int main(int argc, char *argv[])
 								print_msg("Error: delete_log() failed. (ret=%d)", ret);
 								goto exit;
 							}
+							/* Add a new log entry */
+							ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+							if (ret) {
+								print_msg("Error: write_log() failed. (ret=%d)", ret);
+								goto exit;
+							}
+						}
+					} else {
+						/* Add a new log entry */
+						ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+						if (ret) {
+							print_msg("Error: write_log() failed. (ret=%d)", ret);
+							goto exit;
 						}
 					}
 
-					/* Add a new log entry */
-					ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
-					if (ret) {
-						print_msg("Error: write_log() failed. (ret=%d)", ret);
-						goto exit;
-					}
-
-					/* Update commitIndex */
-					if (buf.append_req.leaderCommit > commitIndex) {
-						commitIndex = (buf.append_req.leaderCommit > log_tail->index) ? log_tail->index : buf.append_req.leaderCommit;
-					}
-
 					packet.append_res.success = RAFT_TRUE;
+					packet.append_res.writtenIndex = get_lastLogIndex();
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
 					print_msg("Send Append Entries RPC response to %s (%d)", buf.name, packet.append_res.success);
 				}
+
+				/* Update commitIndex */
+				if (buf.append_req.leaderCommit > commitIndex) {
+					commitIndex = (buf.append_req.leaderCommit > log_tail->index) ? log_tail->index : buf.append_req.leaderCommit;
+				}
+
 				break;
 			case RPC_TYPE_REQUEST_VOTE_REQ:
 				pt_node = nodes;
@@ -336,29 +344,39 @@ int main(int argc, char *argv[])
 
 					/* Check if candidate's term is equal or new */
 					if (buf.request_req.term >= currentTerm) {
-						if (votedFor[0] == '\0' || !strcmp(buf.request_req.candidateId, votedFor)) {
-							/* Vote */
-							packet.request_res.voteGranted = RAFT_TRUE;
-							strncpy(votedFor, buf.request_req.candidateId, sizeof(votedFor) - 1);
-							ret = write_votedFor(&fp_votedFor);
-							if (ret != RET_SUCCESS) {
-								print_msg("Error: write_votedFor() failed. (ret=%d)", ret);
-								goto exit;
+						if ((votedFor[0] == '\0' || !strcmp(buf.request_req.candidateId, votedFor)) && buf.request_req.lastLogIndex >= get_lastLogIndex()) {
+							int voteFlag = 0;
+							
+							if (!log_tail) {
+								voteFlag = 1;
+							} else {
+								if (buf.request_req.lastLogTerm >= log_tail->index) {
+									voteFlag = 1;
+								}
 							}
 							
-							/* Reset election timeout */
-							result = set_timeout(&last_ts);
-							if (result != RET_SUCCESS) {
-								ret = RET_ERR_CLOCK_GETTIME;
-								goto exit;
+							if (voteFlag) {
+								/* Vote */
+								packet.request_res.voteGranted = RAFT_TRUE;
+								strncpy(votedFor, buf.request_req.candidateId, sizeof(votedFor) - 1);
+								ret = write_votedFor(&fp_votedFor);
+								if (ret != RET_SUCCESS) {
+									print_msg("Error: write_votedFor() failed. (ret=%d)", ret);
+									goto exit;
+								}
+								
+								/* Reset election timeout */
+								result = set_timeout(&last_ts);
+								if (result != RET_SUCCESS) {
+									ret = RET_ERR_CLOCK_GETTIME;
+									goto exit;
+								}
 							}
 						}
 					} else {
 						/* Cadidate's term is old, not vote */
 						packet.request_res.voteGranted = RAFT_FALSE;
 					}
-
-					/* 要修正 lastLogIndex, lastLogTermチェック*/
 
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
@@ -415,8 +433,10 @@ int main(int argc, char *argv[])
 					pt_node = nodes;
 					while (pt_node) {
 						if (!strcmp(pt_node->name, buf.name)) {
-							pt_node->matchIndex = pt_node->nextIndex;
-							pt_node->nextIndex = pt_node->nextIndex + 1;
+							if (buf.append_res.writtenIndex == pt_node->nextIndex) {
+								pt_node->matchIndex = pt_node->nextIndex;
+								pt_node->nextIndex = pt_node->nextIndex + 1;
+							}
 							break;
 						}
 						pt_node = pt_node->next;
@@ -587,10 +607,6 @@ int main(int argc, char *argv[])
 					break;
 				}
 
-				if (pt_log->index <= commitIndex) {
-					break;
-				}
-
 				committed = 1; // 1 means my own commit
 				pt_node = nodes;
 				while (pt_node) {
@@ -616,6 +632,18 @@ int main(int argc, char *argv[])
 			/* Reply to client */
 
 			
+			/* Debug */
+			/*print_msg("commitIndex:%d", commitIndex);
+			pt_node = nodes;
+			while (pt_node) {
+				if (!strcmp(mynode.name, pt_node->name)) {
+					pt_node = pt_node->next;
+					continue;
+				}
+				print_msg("name:%s, matchIndex:%d, nextIndex:%d", pt_node->name, pt_node->matchIndex, pt_node->nextIndex);
+				pt_node = pt_node->next;
+			}*/
+
 			/* Send AppendEntries RPC */
 			if (commitIndex != get_lastLogIndex() || !committed_all) {
 				pt_node = nodes;

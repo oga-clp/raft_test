@@ -127,6 +127,7 @@ typedef struct _SET_COMMAND_REQ {
 typedef struct _APPEND_ENTRIES_RES {
 	int					term;
 	int					success;
+	int					writtenIndex;	// REQ/RES の紐づけ用
 } APPEND_ENTRIES_RES, *PAPPEND_ENTRIES_RES;
 
 typedef struct _REQUEST_VOTE_RES {
