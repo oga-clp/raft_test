@@ -276,7 +276,7 @@ int main(int argc, char *argv[])
 								goto exit;
 							}
 							/* Add a new log entry */
-							ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+							ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command, myrole);
 							if (ret) {
 								print_msg("Error: write_log() failed. (ret=%d)", ret);
 								goto exit;
@@ -284,7 +284,7 @@ int main(int argc, char *argv[])
 						}
 					} else {
 						/* Add a new log entry */
-						ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command);
+						ret = write_log(&fp_log, buf.append_req.entries.term, buf.append_req.entries.command, myrole);
 						if (ret) {
 							print_msg("Error: write_log() failed. (ret=%d)", ret);
 							goto exit;
@@ -388,7 +388,7 @@ int main(int argc, char *argv[])
 			case RPC_TYPE_SET_COMMAND_REQ:
 				if (myrole == ROLE_LEADER) {
 					/* Write data to the local log */
-					ret = write_log(&fp_log, currentTerm, buf.setcommand_req.command);
+					ret = write_log(&fp_log, currentTerm, buf.setcommand_req.command, myrole);
 					if (ret) {
 						print_msg("Error: write_log() failed. (ret=%d)", ret);
 						goto exit;
@@ -907,7 +907,8 @@ exit:
 
 void init_leader(PNODE_INFO *nodes, NODE_INFO mynode)
 {
-	NODE_INFO	*pt_node = NULL;
+	NODE_INFO			*pt_node = NULL;
+	LOG_ENTRIES_INFO	*pt_log = NULL;
 
 	pt_node = *nodes;
 	while (pt_node) {
@@ -919,6 +920,12 @@ void init_leader(PNODE_INFO *nodes, NODE_INFO mynode)
 		pt_node->nextIndex = get_lastLogIndex() + 1;
 		pt_node->matchIndex = 0;
 		pt_node = pt_node->next;
+	}
+
+	pt_log = log;
+	while (pt_log) {
+		pt_log->reply = RAFT_FALSE;
+		pt_log = pt_log->next;
 	}
 
 	return;
@@ -1117,7 +1124,7 @@ exit:
 	return ret;
 }
 
-int write_log(FILE **fp, int term, char *command)
+int write_log(FILE **fp, int term, char *command, int role)
 {
 	int					ret = RET_SUCCESS;
 	int					result;
@@ -1137,6 +1144,11 @@ int write_log(FILE **fp, int term, char *command)
 
 	tmp_log_entry->next = NULL;
 	tmp_log_entry->index = get_lastLogIndex() + 1;
+	if (role == ROLE_LEADER) {
+		tmp_log_entry->reply = RAFT_TRUE;
+	} else {
+		tmp_log_entry->reply = RAFT_FALSE;
+	}
 	tmp_log_entry->log.term = term;
 	strncpy(tmp_log_entry->log.command, command, sizeof(tmp_log_entry->log.command) - 1);
 
@@ -1257,7 +1269,7 @@ void update_stateMachine(FILE **fp, int role, NODE_INFO mynode)
 		fflush(*fp);
 
 		/* Reply to client */
-		if (role == ROLE_LEADER) {
+		if (role == ROLE_LEADER && tmp_log_entry->reply == RAFT_TRUE) {
 			struct sockaddr_in	tmp_addr;
 			socklen_t 			tmp_addrlen = sizeof(struct sockaddr_in);
 			RPC_INFO			packet;
@@ -1278,6 +1290,8 @@ void update_stateMachine(FILE **fp, int role, NODE_INFO mynode)
 			sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&tmp_addr, tmp_addrlen);
 			close(target_sock);
 			print_msg("Send command response to the client. index:%d, term:%d, command:%s", packet.setcommand_res.index, packet.setcommand_res.term, packet.setcommand_res.command);
+
+			tmp_log_entry->reply = RAFT_FALSE;
 		}
 
 		tmp_log_entry = tmp_log_entry->next;

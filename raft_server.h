@@ -96,6 +96,7 @@ typedef struct _LOG_INFO {
 typedef struct _LOG_ENTRIES_INFO {
 	int							index;
 	struct _LOG_INFO			log;
+	int							reply;
 	struct _LOG_ENTRIES_INFO	*next;
 	struct _LOG_ENTRIES_INFO	*prev;
 } LOG_ENTRIES_INFO, *PLOG_ENTRIES_INFO;
@@ -175,7 +176,7 @@ int read_votedFor(FILE **fp);
 int read_log(FILE **fp);
 int write_currentTerm(FILE **fp);
 int write_votedFor(FILE **fp);
-int write_log(FILE **fp, int term, char *command);
+int write_log(FILE **fp, int term, char *command, int role);
 int delete_log(FILE **fp, int index);
 int get_lastLogIndex();
 int get_lastLogTerm();
