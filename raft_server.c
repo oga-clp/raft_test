@@ -244,10 +244,10 @@ int main(int argc, char *argv[])
 					print_msg("Received AppendEntries RPC request from %s (%s)", buf.name, buf.append_req.entries.command);
 
 					/* Debug */
-					print_msg("leaderId:%s, prevLogIndex:%d, prevLogTerm:%d, entries(term):%d, entries(command):%s, leaderCommit:%d",
+					/*print_msg("leaderId:%s, prevLogIndex:%d, prevLogTerm:%d, entries(term):%d, entries(command):%s, leaderCommit:%d",
 						buf.append_req.leaderId, buf.append_req.prevLogIndex, buf.append_req.prevLogTerm,
 						buf.append_req.entries.term, buf.append_req.entries.command, buf.append_req.leaderCommit);
-					print_msg("lastApplied:%d, commitIndex:%d", lastApplied, commitIndex);
+					print_msg("lastApplied:%d, commitIndex:%d", lastApplied, commitIndex);*/
 
 					/* Check prevLogIndex and prevLogTerm */
 					int tmp_term;
@@ -341,6 +341,7 @@ int main(int argc, char *argv[])
 					packet.type = RPC_TYPE_REQUEST_VOTE_RES;
 					strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
 					packet.request_res.term = currentTerm;
+					packet.request_res.voteGranted = RAFT_FALSE;
 
 					/* Check if candidate's term is equal or new */
 					if (buf.request_req.term >= currentTerm) {
@@ -350,7 +351,7 @@ int main(int argc, char *argv[])
 							if (!log_tail) {
 								voteFlag = 1;
 							} else {
-								if (buf.request_req.lastLogTerm >= log_tail->index) {
+								if (buf.request_req.lastLogTerm >= log_tail->log.term) {
 									voteFlag = 1;
 								}
 							}
@@ -373,9 +374,6 @@ int main(int argc, char *argv[])
 								}
 							}
 						}
-					} else {
-						/* Cadidate's term is old, not vote */
-						packet.request_res.voteGranted = RAFT_FALSE;
 					}
 
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
@@ -684,7 +682,7 @@ int main(int argc, char *argv[])
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
 
-					print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries.command);
+					//print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries.command);
 					pt_node = pt_node->next;
 				}
 			}
