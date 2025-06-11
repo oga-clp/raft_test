@@ -176,7 +176,7 @@ int main(int argc, char *argv[])
 			case RPC_TYPE_APPEND_ENTRIES_REQ:
 				pt_node = nodes;
 				while (pt_node) {
-					if (!strcmp(buf.request_req.candidateId, pt_node->name)) {
+					if (!strcmp(buf.name, pt_node->name)) {
 						break;
 					}
 					pt_node = pt_node->next;
@@ -292,7 +292,7 @@ int main(int argc, char *argv[])
 					}
 
 					packet.append_res.success = RAFT_TRUE;
-					packet.append_res.writtenIndex = get_lastLogIndex();
+					packet.append_res.writtenIndex = buf.append_req.prevLogIndex + 1;
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
 					print_msg("Send Append Entries RPC response to %s (%d)", buf.name, packet.append_res.success);
@@ -679,7 +679,7 @@ int main(int argc, char *argv[])
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
 
-					//print_msg("Send AppendEntries RPC request to %s (%s)", pt_node->name, packet.append_req.entries.command);
+					//print_msg("Send AppendEntries RPC request to %s (%s) nextIndex:%d, matchIndex:%d", pt_node->name, packet.append_req.entries.command, pt_node->nextIndex, pt_node->matchIndex);
 					pt_node = pt_node->next;
 				}
 			}
@@ -1128,7 +1128,6 @@ int write_log(FILE **fp, int term, char *command, int role)
 {
 	int					ret = RET_SUCCESS;
 	int					result;
-	int					index = 0;
 	char				line[LOG_LINE_LEN] = {0};
 	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
 
