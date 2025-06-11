@@ -177,7 +177,7 @@ int main(int argc, char *argv[])
 			}
 			if (!pt_node) {
 				/* Invalid node name */
-				print_msg_client("Error: response includes invalid node name %s.", buf.setcommand_res.leaderId);
+				print_msg_client("Error: response includes invalid node name %s.", buf.name);
 				ret = RET_ERR_INVALID_NODE_NAME;
 				goto exit;
 			}
@@ -186,7 +186,7 @@ int main(int argc, char *argv[])
 			target_sock = socket(AF_INET, SOCK_DGRAM, 0);
 			sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 			close(target_sock);
-			print_msg_client("Send request to %s (redirect)", pt_node->name);
+			print_msg_client("Send request to %s (redirected)", pt_node->name);
 
 			/* Receive command result*/
 			result = set_timeout_client(&last_ts);
@@ -218,7 +218,7 @@ int main(int argc, char *argv[])
 					print_msg_client("Error: command timeout.");
 					break;
 				} else if (result == RET_ERR_CLOCK_GETTIME) {
-					print_msg_client("Error] check_timeout_client() failed. (ret=%d)", result);
+					print_msg_client("Error: check_timeout_client() failed. (ret=%d)", result);
 					ret = RET_ERR_CLOCK_GETTIME;
 					goto exit;
 				}

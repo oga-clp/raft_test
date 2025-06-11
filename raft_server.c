@@ -378,7 +378,7 @@ int main(int argc, char *argv[])
 
 					sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&pt_node->addr, sizeof(pt_node->addr));
 					close(target_sock);
-					print_msg("Send RequestVote RPC response to %s", pt_node->name);
+					print_msg("Send RequestVote RPC response to %s (%d)", pt_node->name, packet.request_res.voteGranted);
 				}
 				break;
 			case RPC_TYPE_INSTALL_SNAPSHOT_REQ:
@@ -626,9 +626,6 @@ int main(int argc, char *argv[])
 					break;
 				}
 			}
-
-			/* Reply to client */
-
 			
 			/* Debug */
 			/*print_msg("commitIndex:%d", commitIndex);
@@ -689,7 +686,7 @@ int main(int argc, char *argv[])
 		}
 
 		/* Update state machine */
-		update_stateMachine(&fp_stateMachine);
+		update_stateMachine(&fp_stateMachine, myrole, mynode);
 	}
 
 exit:
@@ -1244,9 +1241,10 @@ LOG_ENTRIES_INFO* get_logEntry(int index) {
 	}
 }
 
-void update_stateMachine(FILE **fp)
+void update_stateMachine(FILE **fp, int role, NODE_INFO mynode)
 {
 	LOG_ENTRIES_INFO	*tmp_log_entry = NULL;
+	NODE_INFO			*pt_node = NULL;
 
 	if (lastApplied == commitIndex) {
 		return;
@@ -1257,8 +1255,33 @@ void update_stateMachine(FILE **fp)
 	while (lastApplied != commitIndex && tmp_log_entry) {
 		fprintf(*fp, "%s\n", tmp_log_entry->log.command);
 		fflush(*fp);
-		lastApplied++;
+
+		/* Reply to client */
+		if (role == ROLE_LEADER) {
+			struct sockaddr_in	tmp_addr;
+			socklen_t 			tmp_addrlen = sizeof(struct sockaddr_in);
+			RPC_INFO			packet;
+			int					target_sock;
+
+			target_sock = socket(AF_INET, SOCK_DGRAM, 0);
+			memset(&packet, 0, sizeof(packet));
+			packet.type = RPC_TYPE_SET_COMMAND_RES;
+			strncpy(packet.name, mynode.name, sizeof(packet.name) - 1);
+			packet.setcommand_res.committed = RAFT_TRUE;
+			packet.setcommand_res.index = tmp_log_entry->index;
+			packet.setcommand_res.term = tmp_log_entry->log.term;
+			strncpy(packet.setcommand_res.command, tmp_log_entry->log.command, sizeof(packet.setcommand_res.command) - 1);
+
+			tmp_addr.sin_family = AF_INET;
+			tmp_addr.sin_port = htons((unsigned short)DEFAULT_CLIENT_PORT);
+			tmp_addr.sin_addr.s_addr = inet_addr(SERVER_ADDR);
+			sendto(target_sock, &packet, sizeof(packet), 0, (struct sockaddr *)&tmp_addr, tmp_addrlen);
+			close(target_sock);
+			print_msg("Send command response to the client. index:%d, term:%d, command:%s", packet.setcommand_res.index, packet.setcommand_res.term, packet.setcommand_res.command);
+		}
+
 		tmp_log_entry = tmp_log_entry->next;
+		lastApplied++;
 	}
 
 	return;

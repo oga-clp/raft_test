@@ -142,6 +142,9 @@ typedef struct _GET_COMMAND_RES {
 typedef struct _SET_COMMAND_RES {
 	int					committed;
 	char				leaderId[NODE_NAME_LEN];
+	int					index;
+	int					term;
+	char				command[COMMAND_LEN];
 } SET_COMMAND_RES, *PSET_COMMAND_RES;
 
 typedef struct _RPC_INFO {
@@ -177,7 +180,7 @@ int delete_log(FILE **fp, int index);
 int get_lastLogIndex();
 int get_lastLogTerm();
 LOG_ENTRIES_INFO* get_logEntry(int index);
-void update_stateMachine(FILE **fp);
+void update_stateMachine(FILE **fp, int role, NODE_INFO mynode);
 void print_msg(char *fmt, ...);
 
 int get_config_client(int *timeout, PNODE_INFO *nodes, int *node_num);
